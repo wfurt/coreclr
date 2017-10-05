@@ -887,8 +887,7 @@ void CodeGen::genCodeForBinary(GenTree* treeNode)
     }
 
     // try to use an inc or dec
-    if (oper == GT_ADD && !varTypeIsFloating(treeNode) && src->isContainedIntOrIImmed() && !treeNode->gtOverflowEx() &&
-        !treeNode->gtSetFlags())
+    if (oper == GT_ADD && !varTypeIsFloating(treeNode) && src->isContainedIntOrIImmed() && !treeNode->gtOverflowEx())
     {
         if (src->IsIntegralConst(1))
         {
@@ -5370,7 +5369,6 @@ void CodeGen::genCallInstruction(GenTreeCall* call)
     }
 #endif // defined(_TARGET_X86_)
 
-#ifdef FEATURE_AVX_SUPPORT
     // When it's a PInvoke call and the call type is USER function, we issue VZEROUPPER here
     // if the function contains 256bit AVX instructions, this is to avoid AVX-256 to Legacy SSE
     // transition penalty, assuming the user function contains legacy SSE instruction.
@@ -5382,7 +5380,6 @@ void CodeGen::genCallInstruction(GenTreeCall* call)
         assert(compiler->getSIMDInstructionSet() == InstructionSet_AVX);
         instGen(INS_vzeroupper);
     }
-#endif
 
     if (target != nullptr)
     {
@@ -8732,7 +8729,6 @@ void CodeGen::genAmd64EmitterUnitTests()
     CLANG_FORMAT_COMMENT_ANCHOR;
 
 #ifdef ALL_XARCH_EMITTER_UNIT_TESTS
-#ifdef FEATURE_AVX_SUPPORT
     genDefineTempLabel(genCreateTempLabel());
 
     // vhaddpd     ymm0,ymm1,ymm2
@@ -8802,7 +8798,6 @@ void CodeGen::genAmd64EmitterUnitTests()
     getEmitter()->emitIns_R_R_R(INS_cvtss2sd, EA_4BYTE, REG_XMM0, REG_XMM1, REG_XMM2);
     // vdivsd      xmm0,xmm1,xmm2
     getEmitter()->emitIns_R_R_R(INS_cvtsd2ss, EA_8BYTE, REG_XMM0, REG_XMM1, REG_XMM2);
-#endif // FEATURE_AVX_SUPPORT
 #endif // ALL_XARCH_EMITTER_UNIT_TESTS
     printf("*************** End of genAmd64EmitterUnitTests()\n");
 }
