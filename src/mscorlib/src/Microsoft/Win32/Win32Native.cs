@@ -531,9 +531,6 @@ namespace Microsoft.Win32
         [DllImport(Interop.Libraries.Kernel32, SetLastError = true, CharSet = CharSet.Auto, BestFitMapping = false)]
         internal static extern SafeWaitHandle OpenSemaphore(uint desiredAccess, bool inheritHandle, string name);
 
-        [DllImport(Interop.Libraries.Kernel32, CharSet = CharSet.Auto, SetLastError = true, BestFitMapping = false)]
-        internal static extern int GetSystemDirectory([Out]StringBuilder sb, int length);
-
         internal static readonly IntPtr INVALID_HANDLE_VALUE = new IntPtr(-1);  // WinBase.h
 
         // Note, these are #defines used to extract handles, and are NOT handles.
@@ -620,6 +617,7 @@ namespace Microsoft.Win32
         internal const int ERROR_BAD_IMPERSONATION_LEVEL = 0x542;
         internal const int ERROR_CANT_OPEN_ANONYMOUS = 0x543;
         internal const int ERROR_NO_SECURITY_ON_OBJECT = 0x546;
+        internal const int ERROR_NO_SYSTEM_RESOURCES = 0x5AA;
         internal const int ERROR_TRUSTED_RELATIONSHIP_FAILURE = 0x6FD;
 
         // Error codes from ntstatus.h
@@ -687,7 +685,15 @@ namespace Microsoft.Win32
         internal static extern bool SetEnvironmentVariable(string lpName, string lpValue);
 
         [DllImport(Interop.Libraries.Kernel32, CharSet = CharSet.Auto, SetLastError = true, BestFitMapping = false)]
-        internal static extern int GetEnvironmentVariable(string lpName, [Out]StringBuilder lpValue, int size);
+        private static extern unsafe int GetEnvironmentVariable(string lpName, char* lpValue, int size);
+
+        internal static unsafe int GetEnvironmentVariable(string lpName, Span<char> lpValue)
+        {
+            fixed (char* lpValuePtr = &lpValue.DangerousGetPinnableReference())
+            {
+                return GetEnvironmentVariable(lpName, lpValuePtr, lpValue.Length);
+            }
+        }
 
         [DllImport(Interop.Libraries.Kernel32, CharSet = CharSet.Unicode)]
         internal static unsafe extern char* GetEnvironmentStrings();

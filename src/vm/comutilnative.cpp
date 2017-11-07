@@ -1957,28 +1957,6 @@ void QCALLTYPE COMInterlocked::MemoryBarrierProcessWide()
     FlushProcessWriteBuffers();
 }
 
-FCIMPL6(INT32, ManagedLoggingHelper::GetRegistryLoggingValues, CLR_BOOL* bLoggingEnabled, CLR_BOOL* bLogToConsole, INT32 *iLogLevel, CLR_BOOL* bPerfWarnings, CLR_BOOL* bCorrectnessWarnings, CLR_BOOL* bSafeHandleStackTraces)
-{
-    FCALL_CONTRACT;
-
-    INT32 logFacility = 0;
-
-    HELPER_METHOD_FRAME_BEGIN_RET_0();
-
-    *bLoggingEnabled         = (bool)(g_pConfig->GetConfigDWORD_DontUse_(CLRConfig::INTERNAL_LogEnable, 0)!=0);
-    *bLogToConsole           = (bool)(g_pConfig->GetConfigDWORD_DontUse_(CLRConfig::INTERNAL_LogToConsole, 0)!=0);
-    *iLogLevel               = (INT32)(g_pConfig->GetConfigDWORD_DontUse_(CLRConfig::EXTERNAL_LogLevel, 0));
-    logFacility              = (INT32)(g_pConfig->GetConfigDWORD_DontUse_(CLRConfig::INTERNAL_ManagedLogFacility, 0));
-    *bPerfWarnings           = (bool)(g_pConfig->GetConfigDWORD_DontUse_(CLRConfig::INTERNAL_BCLPerfWarnings, 0)!=0);
-    *bCorrectnessWarnings    = (bool)(g_pConfig->GetConfigDWORD_DontUse_(CLRConfig::INTERNAL_BCLCorrectnessWarnings, 0)!=0);
-    *bSafeHandleStackTraces  = (bool)(g_pConfig->GetConfigDWORD_DontUse_(CLRConfig::INTERNAL_SafeHandleStackTraces, 0)!=0);
-
-    HELPER_METHOD_FRAME_END();                              \
-
-    return logFacility;
-}
-FCIMPLEND
-
 static BOOL HasOverriddenMethod(MethodTable* mt, MethodTable* classMT, WORD methodSlot)
 {
     CONTRACTL{

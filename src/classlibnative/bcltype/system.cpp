@@ -31,16 +31,6 @@
 #include "array.h"
 #include "eepolicy.h"
 
-
-#ifdef FEATURE_WINDOWSPHONE
-Volatile<BOOL> g_fGetPhoneVersionInitialized;
-
-// This is the API to query the phone version information
-typedef BOOL (*pfnGetPhoneVersion)(LPOSVERSIONINFO lpVersionInformation);
-
-pfnGetPhoneVersion g_pfnGetPhoneVersion = NULL;
-#endif
-
 typedef void(WINAPI *pfnGetSystemTimeAsFileTime)(LPFILETIME lpSystemTimeAsFileTime);
 extern pfnGetSystemTimeAsFileTime g_pfnGetSystemTimeAsFileTime;
 
@@ -236,49 +226,6 @@ FCIMPL0(Object*, SystemNative::GetCommandLineArgs)
     HELPER_METHOD_FRAME_END();
 
     return OBJECTREFToObject(strArray); 
-}
-FCIMPLEND
-
-
-FCIMPL1(FC_BOOL_RET, SystemNative::_GetCompatibilityFlag, int flag)
-{
-    FCALL_CONTRACT;
-
-    FC_RETURN_BOOL(GetCompatibilityFlag((CompatibilityFlag)flag));
-}
-FCIMPLEND
-
-// Note: Arguments checked in IL.
-FCIMPL1(Object*, SystemNative::_GetEnvironmentVariable, StringObject* strVarUNSAFE)
-{
-    FCALL_CONTRACT;
-
-    STRINGREF refRetVal;
-    STRINGREF strVar;
-
-    refRetVal   = NULL;
-    strVar      = ObjectToSTRINGREF(strVarUNSAFE);
-
-    HELPER_METHOD_FRAME_BEGIN_RET_2(refRetVal, strVar);
-
-    int len;
-
-    // Get the length of the environment variable.
-    PathString envPath;    // prefix complains if pass a null ptr in, so rely on the final length parm instead
-    len = WszGetEnvironmentVariable(strVar->GetBuffer(), envPath);
-
-    if (len != 0)
-    {
-        // Allocate the string.
-        refRetVal = StringObject::NewString(len);
- 
-        wcscpy_s(refRetVal->GetBuffer(), len + 1, envPath);
-        
-    }
-
-    HELPER_METHOD_FRAME_END();
-
-    return OBJECTREFToObject(refRetVal);
 }
 FCIMPLEND
 

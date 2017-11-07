@@ -2832,6 +2832,7 @@ bool Compiler::optCanonicalizeLoop(unsigned char loopInd)
     // multiple times while canonicalizing multiple loop nests, we'll attempt to redirect a predecessor multiple times.
     // This is ok, because after the first redirection, the topPredBlock branch target will no longer match the source
     // edge of the blockMap, so nothing will happen.
+    bool firstPred = true;
     for (flowList* topPred = t->bbPreds; topPred != nullptr; topPred = topPred->flNext)
     {
         BasicBlock* topPredBlock = topPred->flBlock;
@@ -2851,6 +2852,29 @@ bool Compiler::optCanonicalizeLoop(unsigned char loopInd)
         JITDUMP("in optCanonicalizeLoop: redirect top predecessor BB%02u to BB%02u\n", topPredBlock->bbNum,
                 newT->bbNum);
         optRedirectBlock(topPredBlock, blockMap);
+
+        // When we have profile data then the 'newT' block will inherit topPredBlock profile weight
+        if (topPredBlock->hasProfileWeight())
+        {
+            // This corrects an issue when the topPredBlock has a profile based weight
+            //
+            if (firstPred)
+            {
+                JITDUMP("in optCanonicalizeLoop: block BB%02u will inheritWeight from BB%02u\n", newT->bbNum,
+                        topPredBlock->bbNum);
+
+                newT->inheritWeight(topPredBlock);
+                firstPred = false;
+            }
+            else
+            {
+                JITDUMP("in optCanonicalizeLoop: block BB%02u will also contribute to the weight of BB%02u\n",
+                        newT->bbNum, topPredBlock->bbNum);
+
+                BasicBlock::weight_t newWeight = newT->getBBWeight(this) + topPredBlock->getBBWeight(this);
+                newT->setBBWeight(newWeight);
+            }
+        }
     }
 
     assert(newT->bbNext == f);
@@ -3173,12 +3197,16 @@ bool Compiler::optComputeLoopRep(int        constInit,
 
             switch (iterOper)
             {
+#ifdef LEGACY_BACKEND
                 case GT_ASG_SUB:
+#endif
                 case GT_SUB:
                     iterInc = -iterInc;
                     __fallthrough;
 
+#ifdef LEGACY_BACKEND
                 case GT_ASG_ADD:
+#endif
                 case GT_ADD:
                     if (constInitX != constLimitX)
                     {
@@ -3207,15 +3235,17 @@ bool Compiler::optComputeLoopRep(int        constInit,
                     *iterCount = loopCount;
                     return true;
 
+#ifdef LEGACY_BACKEND
                 case GT_ASG_MUL:
-                case GT_MUL:
                 case GT_ASG_DIV:
-                case GT_DIV:
                 case GT_ASG_RSH:
-                case GT_RSH:
                 case GT_ASG_LSH:
-                case GT_LSH:
                 case GT_ASG_UDIV:
+#endif
+                case GT_MUL:
+                case GT_DIV:
+                case GT_RSH:
+                case GT_LSH:
                 case GT_UDIV:
                     return false;
 
@@ -3227,12 +3257,16 @@ bool Compiler::optComputeLoopRep(int        constInit,
         case GT_LT:
             switch (iterOper)
             {
+#ifdef LEGACY_BACKEND
                 case GT_ASG_SUB:
+#endif
                 case GT_SUB:
                     iterInc = -iterInc;
                     __fallthrough;
 
+#ifdef LEGACY_BACKEND
                 case GT_ASG_ADD:
+#endif
                 case GT_ADD:
                     if (constInitX < constLimitX)
                     {
@@ -3261,15 +3295,17 @@ bool Compiler::optComputeLoopRep(int        constInit,
                     *iterCount = loopCount;
                     return true;
 
+#ifdef LEGACY_BACKEND
                 case GT_ASG_MUL:
-                case GT_MUL:
                 case GT_ASG_DIV:
-                case GT_DIV:
                 case GT_ASG_RSH:
-                case GT_RSH:
                 case GT_ASG_LSH:
-                case GT_LSH:
                 case GT_ASG_UDIV:
+#endif
+                case GT_MUL:
+                case GT_DIV:
+                case GT_RSH:
+                case GT_LSH:
                 case GT_UDIV:
                     return false;
 
@@ -3281,12 +3317,16 @@ bool Compiler::optComputeLoopRep(int        constInit,
         case GT_LE:
             switch (iterOper)
             {
+#ifdef LEGACY_BACKEND
                 case GT_ASG_SUB:
+#endif
                 case GT_SUB:
                     iterInc = -iterInc;
                     __fallthrough;
 
+#ifdef LEGACY_BACKEND
                 case GT_ASG_ADD:
+#endif
                 case GT_ADD:
                     if (constInitX <= constLimitX)
                     {
@@ -3315,15 +3355,17 @@ bool Compiler::optComputeLoopRep(int        constInit,
                     *iterCount = loopCount;
                     return true;
 
+#ifdef LEGACY_BACKEND
                 case GT_ASG_MUL:
-                case GT_MUL:
                 case GT_ASG_DIV:
-                case GT_DIV:
                 case GT_ASG_RSH:
-                case GT_RSH:
                 case GT_ASG_LSH:
-                case GT_LSH:
                 case GT_ASG_UDIV:
+#endif
+                case GT_MUL:
+                case GT_DIV:
+                case GT_RSH:
+                case GT_LSH:
                 case GT_UDIV:
                     return false;
 
@@ -3335,12 +3377,16 @@ bool Compiler::optComputeLoopRep(int        constInit,
         case GT_GT:
             switch (iterOper)
             {
+#ifdef LEGACY_BACKEND
                 case GT_ASG_SUB:
+#endif
                 case GT_SUB:
                     iterInc = -iterInc;
                     __fallthrough;
 
+#ifdef LEGACY_BACKEND
                 case GT_ASG_ADD:
+#endif
                 case GT_ADD:
                     if (constInitX > constLimitX)
                     {
@@ -3369,15 +3415,17 @@ bool Compiler::optComputeLoopRep(int        constInit,
                     *iterCount = loopCount;
                     return true;
 
+#ifdef LEGACY_BACKEND
                 case GT_ASG_MUL:
-                case GT_MUL:
                 case GT_ASG_DIV:
-                case GT_DIV:
                 case GT_ASG_RSH:
-                case GT_RSH:
                 case GT_ASG_LSH:
-                case GT_LSH:
                 case GT_ASG_UDIV:
+#endif
+                case GT_MUL:
+                case GT_DIV:
+                case GT_RSH:
+                case GT_LSH:
                 case GT_UDIV:
                     return false;
 
@@ -3389,12 +3437,16 @@ bool Compiler::optComputeLoopRep(int        constInit,
         case GT_GE:
             switch (iterOper)
             {
+#ifdef LEGACY_BACKEND
                 case GT_ASG_SUB:
+#endif
                 case GT_SUB:
                     iterInc = -iterInc;
                     __fallthrough;
 
+#ifdef LEGACY_BACKEND
                 case GT_ASG_ADD:
+#endif
                 case GT_ADD:
                     if (constInitX >= constLimitX)
                     {
@@ -3423,15 +3475,17 @@ bool Compiler::optComputeLoopRep(int        constInit,
                     *iterCount = loopCount;
                     return true;
 
+#ifdef LEGACY_BACKEND
                 case GT_ASG_MUL:
-                case GT_MUL:
                 case GT_ASG_DIV:
-                case GT_DIV:
                 case GT_ASG_RSH:
-                case GT_RSH:
                 case GT_ASG_LSH:
-                case GT_LSH:
                 case GT_ASG_UDIV:
+#endif
+                case GT_MUL:
+                case GT_DIV:
+                case GT_RSH:
+                case GT_LSH:
                 case GT_UDIV:
                     return false;
 
@@ -4570,8 +4624,8 @@ bool Compiler::optDeriveLoopCloningConditions(unsigned loopNum, LoopCloneContext
     JITDUMP("------------------------------------------------------------\n");
     JITDUMP("Deriving cloning conditions for L%02u\n", loopNum);
 
-    LoopDsc*                      loop     = &optLoopTable[loopNum];
-    ExpandArrayStack<LcOptInfo*>* optInfos = context->GetLoopOptInfo(loopNum);
+    LoopDsc*                         loop     = &optLoopTable[loopNum];
+    JitExpandArrayStack<LcOptInfo*>* optInfos = context->GetLoopOptInfo(loopNum);
 
     if (loop->lpTestOper() == GT_LT)
     {
@@ -4615,7 +4669,7 @@ bool Compiler::optDeriveLoopCloningConditions(unsigned loopNum, LoopCloneContext
                 JITDUMP("> limit %d is invalid\n", limit);
                 return false;
             }
-            ident = LC_Ident(limit, LC_Ident::Const);
+            ident = LC_Ident(static_cast<unsigned>(limit), LC_Ident::Const);
         }
         else if (loop->lpFlags & LPFLG_VAR_LIMIT)
         {
@@ -4798,11 +4852,11 @@ bool Compiler::optDeriveLoopCloningConditions(unsigned loopNum, LoopCloneContext
 //
 bool Compiler::optComputeDerefConditions(unsigned loopNum, LoopCloneContext* context)
 {
-    ExpandArrayStack<LC_Deref*> nodes(getAllocator());
-    int                         maxRank = -1;
+    JitExpandArrayStack<LC_Deref*> nodes(getAllocator());
+    int                            maxRank = -1;
 
     // Get the dereference-able arrays.
-    ExpandArrayStack<LC_Array>* deref = context->EnsureDerefs(loopNum);
+    JitExpandArrayStack<LC_Array>* deref = context->EnsureDerefs(loopNum);
 
     // For each array in the dereference list, construct a tree,
     // where the nodes are array and index variables and an edge 'u-v'
@@ -4873,7 +4927,8 @@ bool Compiler::optComputeDerefConditions(unsigned loopNum, LoopCloneContext* con
     }
 
     // Derive conditions into an 'array of level x array of conditions' i.e., levelCond[levels][conds]
-    ExpandArrayStack<ExpandArrayStack<LC_Condition>*>* levelCond = context->EnsureBlockConditions(loopNum, condBlocks);
+    JitExpandArrayStack<JitExpandArrayStack<LC_Condition>*>* levelCond =
+        context->EnsureBlockConditions(loopNum, condBlocks);
     for (unsigned i = 0; i < nodes.Size(); ++i)
     {
         nodes[i]->DeriveLevelConditions(levelCond);
@@ -4929,7 +4984,7 @@ void Compiler::optDebugLogLoopCloning(BasicBlock* block, GenTreePtr insertBefore
 //
 void Compiler::optPerformStaticOptimizations(unsigned loopNum, LoopCloneContext* context DEBUGARG(bool dynamicPath))
 {
-    ExpandArrayStack<LcOptInfo*>* optInfos = context->GetLoopOptInfo(loopNum);
+    JitExpandArrayStack<LcOptInfo*>* optInfos = context->GetLoopOptInfo(loopNum);
     for (unsigned i = 0; i < optInfos->Size(); ++i)
     {
         LcOptInfo* optInfo = optInfos->GetRef(i);
@@ -5079,7 +5134,7 @@ void Compiler::optCloneLoops()
     // For each loop, derive cloning conditions for the optimization candidates.
     for (unsigned i = 0; i < optLoopCount; ++i)
     {
-        ExpandArrayStack<LcOptInfo*>* optInfos = context.GetLoopOptInfo(i);
+        JitExpandArrayStack<LcOptInfo*>* optInfos = context.GetLoopOptInfo(i);
         if (optInfos == nullptr)
         {
             continue;
@@ -5403,8 +5458,8 @@ BasicBlock* Compiler::optInsertLoopChoiceConditions(LoopCloneContext* context,
     JITDUMP("Inserting loop cloning conditions\n");
     assert(context->HasBlockConditions(loopNum));
 
-    BasicBlock*                                        curCond   = head;
-    ExpandArrayStack<ExpandArrayStack<LC_Condition>*>* levelCond = context->GetBlockConditions(loopNum);
+    BasicBlock*                                              curCond   = head;
+    JitExpandArrayStack<JitExpandArrayStack<LC_Condition>*>* levelCond = context->GetBlockConditions(loopNum);
     for (unsigned i = 0; i < levelCond->Size(); ++i)
     {
         bool isHeaderBlock = (curCond == head);
@@ -5566,7 +5621,7 @@ bool Compiler::optNarrowTree(GenTreePtr tree, var_types srct, var_types dstt, Va
     oper = tree->OperGet();
     kind = tree->OperKind();
 
-    if (kind & GTK_ASGOP)
+    if (GenTree::OperIsAssignment(oper))
     {
         noway_assert(doit == false);
         return false;
@@ -5906,7 +5961,7 @@ Compiler::fgWalkResult Compiler::optIsVarAssgCB(GenTreePtr* pTree, fgWalkData* d
 {
     GenTreePtr tree = *pTree;
 
-    if (tree->OperKind() & GTK_ASGOP)
+    if (tree->OperIsAssignment())
     {
         GenTreePtr dest     = tree->gtOp.gtOp1;
         genTreeOps destOper = dest->OperGet();
@@ -6473,7 +6528,6 @@ void Compiler::optHoistThisLoop(unsigned lnum, LoopHoistContext* hoistCtxt)
     BasicBlock* head = pLoopDsc->lpHead;
     BasicBlock* tail = pLoopDsc->lpBottom;
     BasicBlock* lbeg = pLoopDsc->lpEntry;
-    BasicBlock* block;
 
     // We must have a do-while loop
     if ((pLoopDsc->lpFlags & LPFLG_DO_WHILE) == 0)
@@ -6595,7 +6649,7 @@ void Compiler::optHoistThisLoop(unsigned lnum, LoopHoistContext* hoistCtxt)
     // Find the set of definitely-executed blocks.
     // Ideally, the definitely-executed blocks are the ones that post-dominate the entry block.
     // Until we have post-dominators, we'll special-case for single-exit blocks.
-    ExpandArrayStack<BasicBlock*> defExec(getAllocatorLoopHoist());
+    JitExpandArrayStack<BasicBlock*> defExec(getAllocatorLoopHoist());
     if (pLoopDsc->lpFlags & LPFLG_ONE_EXIT)
     {
         assert(pLoopDsc->lpExit != nullptr);
@@ -8082,7 +8136,7 @@ GenTreePtr Compiler::optFindLocalInit(BasicBlock* block,
 
         GenTreePtr tree = stmt->gtStmt.gtStmtExpr;
         // If we encounter an assignment to a local variable,
-        if ((tree->OperKind() & GTK_ASGOP) && tree->gtOp.gtOp1->gtOper == GT_LCL_VAR)
+        if (tree->OperIsAssignment() && tree->gtOp.gtOp1->gtOper == GT_LCL_VAR)
         {
             // And the assigned variable equals the input local,
             if (tree->gtOp.gtOp1->gtLclVarCommon.gtLclNum == LclNum)
@@ -8213,7 +8267,12 @@ bool Compiler::optIdentifyLoopOptInfo(unsigned loopNum, LoopCloneContext* contex
     }
 
     // TODO-CQ: CLONE: Mark increasing or decreasing loops.
-    if ((pLoop->lpIterOper() != GT_ASG_ADD && pLoop->lpIterOper() != GT_ADD) || (pLoop->lpIterConst() != 1))
+    if ((
+#ifdef LEGACY_BACKEND
+            pLoop->lpIterOper() != GT_ASG_ADD &&
+#endif
+            pLoop->lpIterOper() != GT_ADD) ||
+        (pLoop->lpIterConst() != 1))
     {
         JITDUMP("> Loop iteration operator not matching\n");
         return false;
@@ -8226,10 +8285,16 @@ bool Compiler::optIdentifyLoopOptInfo(unsigned loopNum, LoopCloneContext* contex
         return false;
     }
 
-    if (!(((pLoop->lpTestOper() == GT_LT || pLoop->lpTestOper() == GT_LE) &&
-           (pLoop->lpIterOper() == GT_ADD || pLoop->lpIterOper() == GT_ASG_ADD)) ||
-          ((pLoop->lpTestOper() == GT_GT || pLoop->lpTestOper() == GT_GE) &&
-           (pLoop->lpIterOper() == GT_SUB || pLoop->lpIterOper() == GT_ASG_SUB))))
+    if (!(((pLoop->lpTestOper() == GT_LT || pLoop->lpTestOper() == GT_LE) && (pLoop->lpIterOper() == GT_ADD
+#ifdef LEGACY_BACKEND
+                                                                              || pLoop->lpIterOper() == GT_ASG_ADD
+#endif
+                                                                              )) ||
+          ((pLoop->lpTestOper() == GT_GT || pLoop->lpTestOper() == GT_GE) && (pLoop->lpIterOper() == GT_SUB
+#ifdef LEGACY_BACKEND
+                                                                              || pLoop->lpIterOper() == GT_ASG_SUB
+#endif
+                                                                              ))))
     {
         JITDUMP("> Loop test (%s) doesn't agree with the direction (%s) of the pLoop->\n",
                 GenTree::OpName(pLoop->lpTestOper()), GenTree::OpName(pLoop->lpIterOper()));

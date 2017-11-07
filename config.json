@@ -12,6 +12,18 @@
       "values": [],
       "defaultValue": ""
     },
+    "__PublishPackages": {
+      "description": "Specifies whether to publish product packages.",
+      "valueType": "property",
+      "values": [ true, false ],
+      "defaultValue": true
+    },
+    "__PublishSymbols": {
+      "description": "Specifies whether to publish symbol packages.",
+      "valueType": "property",
+      "values": [ true, false ],
+      "defaultValue": true
+    },
     "BuildNumberMajor": {
       "description": "Product build major number.",
       "valueType": "property",
@@ -24,7 +36,7 @@
       "values": [],
       "defaultValue": ""
     },
-    "__Container": {
+    "ContainerName": {
       "description": "Container name for Azure upload.",
       "valueType": "property",
       "values": [],
@@ -168,6 +180,12 @@
       "values": [],
       "defaultValue": "/t:GenerateVersionSourceFile /p:GenerateVersionSourceFile=true"
     },
+    "MSBuildNodeCount": {
+      "description": "Sets the value of the number of processors available for MSBuild.",
+      "valueType": "passThrough",
+      "values": [],
+      "defaultValue": "/maxcpucount"
+    },
     "NativeVersionSourceFile": {
       "description": "Provides location for version.cpp",
       "valueType": "property",
@@ -269,6 +287,12 @@
       "valueType": "property",
       "values": [ true, false ],
       "defaultValue": true
+    },
+    "SkipSOS": {
+      "description": "",
+      "valueType": "property",
+      "values": [ true, false ],
+      "defaultValue": false
     },
     "SignType": {
       "description": "Sets the SignType.",
@@ -490,7 +514,8 @@
           "MsBuildEventLogging": "default",
           "RestoreDefaultOptimizationDataPackage": "false",
           "PortableBuild": "true",
-          "UsePartialNGENOptimization": "false"
+          "UsePartialNGENOptimization": "false",
+          "MSBuildNodeCount": "default"
         }
       }
     },
@@ -540,7 +565,7 @@
         "container": {
           "description": "Container name to download from in Azure Blob storage.",
           "settings": {
-            "__Container": "default"
+            "ContainerName": "default"
           }
         },
         "blobNamePrefix": {
@@ -598,7 +623,7 @@
         "container": {
           "description": "Container name to upload into in Azure Blob storage.",
           "settings": {
-            "__Container": "default"
+            "ContainerName": "default"
           }
         },
         "buildArch": {
@@ -630,7 +655,19 @@
           "settings": {
             "PublishTestNativeBins": "default"
           }
-        }
+        },
+        "PublishPackages": {
+          "description": "Publishes product packages.",
+          "settings": {
+            "__PublishPackages": "default"
+          }
+        },
+        "PublishSymbols": {
+          "description": "Publishes symbol packages.",
+          "settings": {
+            "__PublishSymbols": "default"
+          }
+        },
       },
       "defaultValues": {
         "toolName": "msbuild",
@@ -678,11 +715,11 @@
     "msbuild": {
       "osSpecific": {
         "windows": {
-          "defaultParameters": "/nologo /verbosity:minimal /clp:Summary /maxcpucount /nodeReuse:false",
+          "defaultParameters": "/nologo /verbosity:minimal /clp:Summary /nodeReuse:false",
           "path": "Tools/msbuild.cmd"
         },
         "unix": {
-          "defaultParameters": "/nologo /verbosity:minimal /clp:Summary /maxcpucount",
+          "defaultParameters": "/nologo /verbosity:minimal /clp:Summary",
           "path": "Tools/msbuild.sh"
         }
       },

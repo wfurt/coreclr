@@ -104,6 +104,7 @@ DWORD ThreadpoolMgr::NextCompletedWorkRequestsTime;
 LARGE_INTEGER ThreadpoolMgr::CurrentSampleStartTime;
 
 unsigned int ThreadpoolMgr::WorkerThreadSpinLimit;
+bool ThreadpoolMgr::IsHillClimbingDisabled;
 int ThreadpoolMgr::ThreadAdjustmentInterval;
 
 #define INVALID_HANDLE ((HANDLE) -1)
@@ -355,6 +356,7 @@ BOOL ThreadpoolMgr::Initialize()
     EX_TRY
     {
         WorkerThreadSpinLimit = CLRConfig::GetConfigValue(CLRConfig::INTERNAL_ThreadPool_UnfairSemaphoreSpinLimit);
+        IsHillClimbingDisabled = CLRConfig::GetConfigValue(CLRConfig::INTERNAL_HillClimbing_Disable) != 0;
         ThreadAdjustmentInterval = CLRConfig::GetConfigValue(CLRConfig::INTERNAL_HillClimbing_SampleIntervalLow);
         
         pADTPCount->InitResources();
@@ -615,7 +617,7 @@ BOOL ThreadpoolMgr::SetMinThreads(DWORD MinWorkerThreads,
 
         if (GetForceMinWorkerThreadsValue() == 0)
         {
-            MinLimitTotalWorkerThreads = min(MinWorkerThreads, (DWORD)ThreadCounter::MaxPossibleCount);
+            MinLimitTotalWorkerThreads = max(1, min(MinWorkerThreads, (DWORD)ThreadCounter::MaxPossibleCount));
 
             ThreadCounter::Counts counts = WorkerCounter.GetCleanCounts();
             while (counts.MaxWorking < MinLimitTotalWorkerThreads)
@@ -645,7 +647,7 @@ BOOL ThreadpoolMgr::SetMinThreads(DWORD MinWorkerThreads,
 
         END_SO_INTOLERANT_CODE;
 
-        MinLimitTotalCPThreads = min(MinIOCompletionThreads, (DWORD)ThreadCounter::MaxPossibleCount);
+        MinLimitTotalCPThreads = max(1, min(MinIOCompletionThreads, (DWORD)ThreadCounter::MaxPossibleCount));
 
         init_result = TRUE;
     }
@@ -4962,9 +4964,7 @@ void ThreadpoolMgr::DeleteTimer(TimerInfo* timerInfo)
     if (timerInfo->Context != NULL)
     {
         GCX_COOP();
-        DelegateInfo *pDelInfo = (DelegateInfo *)timerInfo->Context;
-        pDelInfo->Release();
-        RecycleMemory( pDelInfo, MEMTYPE_DelegateInfo );
+        delete (ThreadpoolMgr::TimerInfoContext*)timerInfo->Context;
     }
 
     if (timerInfo->ExternalEventSafeHandle != NULL)
@@ -4978,7 +4978,7 @@ void ThreadpoolMgr::DeleteTimer(TimerInfo* timerInfo)
 
 // We add TimerInfos from deleted timers into a linked list.
 // A worker thread will later release the handles held by the TimerInfo
-// and recycle them if possible (See DelegateInfo::MakeDelegateInfo)
+// and recycle them if possible.
 void ThreadpoolMgr::QueueTimerInfoForRelease(TimerInfo *pTimerInfo)
 {
     CONTRACTL
@@ -5048,10 +5048,7 @@ void ThreadpoolMgr::FlushQueueOfTimerInfos()
         GCX_COOP();
         if (pCurrTimerInfo->Context != NULL)
         {
-            DelegateInfo *pCurrDelInfo = (DelegateInfo *) pCurrTimerInfo->Context;
-            pCurrDelInfo->Release();
-
-            RecycleMemory( pCurrDelInfo, MEMTYPE_DelegateInfo );
+            delete (ThreadpoolMgr::TimerInfoContext*)pCurrTimerInfo->Context;
         }
 
         if (pCurrTimerInfo->ExternalEventSafeHandle != NULL)

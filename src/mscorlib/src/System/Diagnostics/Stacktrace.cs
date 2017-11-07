@@ -537,7 +537,8 @@ namespace System.Diagnostics
             {
                 StackFrame sf = GetFrame(iFrameIndex);
                 MethodBase mb = sf.GetMethod();
-                if (mb != null)
+                if (mb != null && (ShowInStackTrace(mb) || 
+                                   (iFrameIndex == m_iNumOfFrames - 1))) // Don't filter last frame
                 {
                     // We want a newline at the end of every line except for the last
                     if (fFirstFrame)
@@ -657,15 +658,10 @@ namespace System.Diagnostics
             return sb.ToString();
         }
 
-        // This helper is called from within the EE to construct a string representation
-        // of the current stack trace.
-        private static String GetManagedStackTraceStringHelper(bool fNeedFileInfo)
+        private static bool ShowInStackTrace(MethodBase mb)
         {
-            // Note all the frames in System.Diagnostics will be skipped when capturing 
-            // a normal stack trace (not from an exception) so we don't need to explicitly
-            // skip the GetManagedStackTraceStringHelper frame.
-            StackTrace st = new StackTrace(0, fNeedFileInfo);
-            return st.ToString();
+            Debug.Assert(mb != null);
+            return !(mb.IsDefined(typeof(StackTraceHiddenAttribute)) || (mb.DeclaringType?.IsDefined(typeof(StackTraceHiddenAttribute)) ?? false));
         }
     }
 }

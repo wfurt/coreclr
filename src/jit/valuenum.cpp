@@ -41,10 +41,6 @@ VNFunc GetVNFuncForOper(genTreeOps oper, bool isUnsigned)
             return VNF_SUB_UN;
         case GT_MUL:
             return VNF_MUL_UN;
-        case GT_DIV:
-            return VNF_DIV_UN;
-        case GT_MOD:
-            return VNF_MOD_UN;
 
         case GT_NOP:
         case GT_COMMA:
@@ -54,7 +50,7 @@ VNFunc GetVNFuncForOper(genTreeOps oper, bool isUnsigned)
     }
 }
 
-ValueNumStore::ValueNumStore(Compiler* comp, IAllocator* alloc)
+ValueNumStore::ValueNumStore(Compiler* comp, CompAllocator* alloc)
     : m_pComp(comp)
     , m_alloc(alloc)
     ,
@@ -190,16 +186,6 @@ T ValueNumStore::EvalOp(VNFunc vnf, T v0, T v1, ValueNum* pExcSet)
                 return T(UT(v0) - UT(v1));
             case VNF_MUL_UN:
                 return T(UT(v0) * UT(v1));
-            case VNF_DIV_UN:
-                if (IsIntZero(v1))
-                {
-                    *pExcSet = VNExcSetSingleton(VNForFunc(TYP_REF, VNF_DivideByZeroExc));
-                    return (T)0;
-                }
-                else
-                {
-                    return T(UT(v0) / UT(v1));
-                }
             default:
                 // Must be int-specific
                 return EvalOpIntegral(vnf, v0, v1, pExcSet);
@@ -666,8 +652,11 @@ bool ValueNumStore::IsSharedStatic(ValueNum vn)
     return GetVNFunc(vn, &funcAttr) && (s_vnfOpAttribs[funcAttr.m_func] & VNFOA_SharedStatic) != 0;
 }
 
-ValueNumStore::Chunk::Chunk(
-    IAllocator* alloc, ValueNum* pNextBaseVN, var_types typ, ChunkExtraAttribs attribs, BasicBlock::loopNumber loopNum)
+ValueNumStore::Chunk::Chunk(CompAllocator*         alloc,
+                            ValueNum*              pNextBaseVN,
+                            var_types              typ,
+                            ChunkExtraAttribs      attribs,
+                            BasicBlock::loopNumber loopNum)
     : m_defs(nullptr), m_numUsed(0), m_baseVN(*pNextBaseVN), m_typ(typ), m_attribs(attribs), m_loopNum(loopNum)
 {
     // Allocate "m_defs" here, according to the typ/attribs pair.
@@ -4273,7 +4262,7 @@ void ValueNumStore::RunTests(Compiler* comp)
 }
 #endif // DEBUG
 
-typedef ExpandArrayStack<BasicBlock*> BlockStack;
+typedef JitExpandArrayStack<BasicBlock*> BlockStack;
 
 // This represents the "to do" state of the value number computation.
 struct ValueNumberState
@@ -5603,6 +5592,15 @@ void Compiler::fgValueNumberTree(GenTreePtr tree, bool evalAsgLhsInd)
     }
 #endif
 
+#if FEATURE_HW_INTRINSICS
+    if (oper == GT_HWIntrinsic)
+    {
+        // TODO-CQ: For now hardware intrinsics are not handled by value numbering to be amenable for CSE'ing.
+        tree->gtVNPair.SetBoth(vnStore->VNForExpr(compCurBB, TYP_UNKNOWN));
+        return;
+    }
+#endif // FEATURE_HW_INTRINSICS
+
     var_types typ = tree->TypeGet();
     if (GenTree::OperIsConst(oper))
     {
@@ -5908,6 +5906,9 @@ void Compiler::fgValueNumberTree(GenTreePtr tree, bool evalAsgLhsInd)
             }
             else // Must be an "op="
             {
+#ifndef LEGACY_BACKEND
+                unreached();
+#else
                 // If the LHS is an IND, we didn't evaluate it when we visited it previously.
                 // But we didn't know that the parent was an op=.  We do now, so go back and evaluate it.
                 // (We actually check if the effective val is the IND.  We will have evaluated any non-last
@@ -5951,6 +5952,7 @@ void Compiler::fgValueNumberTree(GenTreePtr tree, bool evalAsgLhsInd)
                                                                            lhsNormVNP),
                                                     lhsExcVNP);
                 }
+#endif // !LEGACY_BACKEND
             }
             if (tree->TypeGet() != TYP_VOID)
             {
@@ -7906,8 +7908,8 @@ bool Compiler::fgValueNumberHelperCall(GenTreeCall* call)
 // TODO-Cleanup: new JitTestLabels for lib vs cons vs both VN classes?
 void Compiler::JitTestCheckVN()
 {
-    typedef SimplerHashTable<ssize_t, SmallPrimitiveKeyFuncs<ssize_t>, ValueNum, JitSimplerHashBehavior>  LabelToVNMap;
-    typedef SimplerHashTable<ValueNum, SmallPrimitiveKeyFuncs<ValueNum>, ssize_t, JitSimplerHashBehavior> VNToLabelMap;
+    typedef JitHashTable<ssize_t, JitSmallPrimitiveKeyFuncs<ssize_t>, ValueNum>  LabelToVNMap;
+    typedef JitHashTable<ValueNum, JitSmallPrimitiveKeyFuncs<ValueNum>, ssize_t> VNToLabelMap;
 
     // If we have no test data, early out.
     if (m_nodeTestData == nullptr)
@@ -7918,7 +7920,7 @@ void Compiler::JitTestCheckVN()
     NodeToTestDataMap* testData = GetNodeTestData();
 
     // First we have to know which nodes in the tree are reachable.
-    typedef SimplerHashTable<GenTreePtr, PtrKeyFuncs<GenTree>, int, JitSimplerHashBehavior> NodeToIntMap;
+    typedef JitHashTable<GenTreePtr, JitPtrKeyFuncs<GenTree>, int> NodeToIntMap;
     NodeToIntMap* reachable = FindReachableNodesInNodeTestData();
 
     LabelToVNMap* labelToVN = new (getAllocatorDebugOnly()) LabelToVNMap(getAllocatorDebugOnly());

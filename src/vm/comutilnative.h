@@ -201,12 +201,6 @@ public:
         static void QCALLTYPE MemoryBarrierProcessWide();
 };
 
-class ManagedLoggingHelper {
-
-public:
-    static FCDECL6(INT32, GetRegistryLoggingValues, CLR_BOOL* bLoggingEnabled, CLR_BOOL* bLogToConsole, INT32 *bLogLevel, CLR_BOOL* bPerfWarnings, CLR_BOOL* bCorrectnessWarnings, CLR_BOOL* bSafeHandleStackTraces);
-};
-
 class ValueTypeHelper {
 public:
     static FCDECL1(FC_BOOL_RET, CanCompareBits, Object* obj);
