@@ -11,6 +11,11 @@ Module Name:
 Abstract:
     Read memory and cpu limits for the current process
 --*/
+
+#ifdef __FreeBSD__
+#define _WITH_GETLINE
+#endif
+
 #include <cstdint>
 #include <cstddef>
 #include <cassert>
