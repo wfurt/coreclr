@@ -399,7 +399,8 @@ BOOL interceptor_ICJI::isValueClass(CORINFO_CLASS_HANDLE cls)
 // Decides how the JIT should do the optimization to inline the check for
 //     GetTypeFromHandle(handle) == obj.GetType() (for CORINFO_INLINE_TYPECHECK_SOURCE_VTABLE)
 //     GetTypeFromHandle(X) == GetTypeFromHandle(Y) (for CORINFO_INLINE_TYPECHECK_SOURCE_TOKEN)
-CorInfoInlineTypeCheck interceptor_ICJI::canInlineTypeCheck(CORINFO_CLASS_HANDLE cls, CorInfoInlineTypeCheckSource source)
+CorInfoInlineTypeCheck interceptor_ICJI::canInlineTypeCheck(CORINFO_CLASS_HANDLE         cls,
+                                                            CorInfoInlineTypeCheckSource source)
 {
     return original_ICorJitInfo->canInlineTypeCheck(cls, source);
 }
@@ -1036,12 +1037,13 @@ const char* interceptor_ICJI::getMethodName(CORINFO_METHOD_HANDLE ftn,       /* 
     return original_ICorJitInfo->getMethodName(ftn, moduleName);
 }
 
-const char* interceptor_ICJI::getMethodNameFromMetadata(CORINFO_METHOD_HANDLE ftn,          /* IN */
-                                                        const char**          className,    /* OUT */
-                                                        const char**          namespaceName /* OUT */
+const char* interceptor_ICJI::getMethodNameFromMetadata(CORINFO_METHOD_HANDLE ftn,                /* IN */
+                                                        const char**          className,          /* OUT */
+                                                        const char**          namespaceName,      /* OUT */
+                                                        const char**          enclosingClassName /* OUT */
                                                         )
 {
-    return original_ICorJitInfo->getMethodNameFromMetadata(ftn, className, namespaceName);
+    return original_ICorJitInfo->getMethodNameFromMetadata(ftn, className, namespaceName, enclosingClassName);
 }
 
 // this function is for debugging only.  It returns a value that
@@ -1267,7 +1269,7 @@ void* interceptor_ICJI::getFieldAddress(CORINFO_FIELD_HANDLE field, void** ppInd
 }
 
 // return the class handle for the current value of a static field
-CORINFO_CLASS_HANDLE interceptor_ICJI::getStaticFieldCurrentClass(CORINFO_FIELD_HANDLE field, bool *pIsSpeculative)
+CORINFO_CLASS_HANDLE interceptor_ICJI::getStaticFieldCurrentClass(CORINFO_FIELD_HANDLE field, bool* pIsSpeculative)
 {
     return original_ICorJitInfo->getStaticFieldCurrentClass(field, pIsSpeculative);
 }

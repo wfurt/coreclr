@@ -1259,13 +1259,14 @@ const char* MyICJI::getMethodName(CORINFO_METHOD_HANDLE ftn,       /* IN */
     return jitInstance->mc->repGetMethodName(ftn, moduleName);
 }
 
-const char* MyICJI::getMethodNameFromMetadata(CORINFO_METHOD_HANDLE ftn,          /* IN */
-                                              const char**          className,    /* OUT */
-                                              const char**          namespaceName /* OUT */
+const char* MyICJI::getMethodNameFromMetadata(CORINFO_METHOD_HANDLE ftn,                /* IN */
+                                              const char**          className,          /* OUT */
+                                              const char**          namespaceName,      /* OUT */
+                                              const char**          enclosingClassName /* OUT */
                                               )
 {
     jitInstance->mc->cr->AddCall("getMethodNameFromMetadata");
-    return jitInstance->mc->repGetMethodNameFromMetadata(ftn, className, namespaceName);
+    return jitInstance->mc->repGetMethodNameFromMetadata(ftn, className, namespaceName, enclosingClassName);
 }
 
 // this function is for debugging only.  It returns a value that
@@ -1526,7 +1527,7 @@ void* MyICJI::getFieldAddress(CORINFO_FIELD_HANDLE field, void** ppIndirection)
 }
 
 // return the class handle for the current value of a static field
-CORINFO_CLASS_HANDLE MyICJI::getStaticFieldCurrentClass(CORINFO_FIELD_HANDLE field, bool *pIsSpeculative)
+CORINFO_CLASS_HANDLE MyICJI::getStaticFieldCurrentClass(CORINFO_FIELD_HANDLE field, bool* pIsSpeculative)
 {
     jitInstance->mc->cr->AddCall("getStaticFieldCurrentClass");
     return jitInstance->mc->repGetStaticFieldCurrentClass(field, pIsSpeculative);
