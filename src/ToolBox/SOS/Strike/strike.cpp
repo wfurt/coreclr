@@ -2157,7 +2157,7 @@ DECLARE_API(DumpDelegate)
                                     DacpObjectData objData;
                                     if (objData.Request(g_sos, invocationList) == S_OK &&
                                         objData.ObjectType == OBJ_ARRAY &&
-                                        invocationCount <= objData.dwNumComponents)
+                                        invocationCount <= (int)objData.dwNumComponents)
                                     {
                                         for (int i = 0; i < invocationCount; i++)
                                         {
@@ -2363,7 +2363,7 @@ Done:
 // Overload that mirrors the code above when the ExceptionObjectData was already retrieved from LS
 BOOL IsAsyncException(const DacpExceptionObjectData & excData)
 {
-    if (excData.XCode != EXCEPTION_COMPLUS)
+    if ((DWORD)excData.XCode != EXCEPTION_COMPLUS)
         return TRUE;
 
     HRESULT ehr = excData.HResult;
@@ -4273,13 +4273,32 @@ void ResolveContinuation(CLRDATA_ADDRESS* contAddr)
                 }
             }
 
-            // If it was, or if it's storing an action, try to follow through to the action's target.
+            // If we now have an Action, try to follow through to the delegate's target.
             if ((offset = GetObjFieldOffset(contObj.GetAddress(), contObj.GetMT(), W("_target"))) != 0)
             {
                 MOVE(*contAddr, contObj.GetAddress() + offset);
                 if (sos::IsObject(*contAddr, false))
                 {
                     contObj = TO_TADDR(*contAddr);
+
+                    // In some cases, the delegate's target might be a ContinuationWrapper, in which case we want to unwrap that as well.
+                    if (_wcsncmp(contObj.GetTypeName(), W("System.Runtime.CompilerServices.AsyncMethodBuilderCore+ContinuationWrapper"), 74) == 0 &&
+                        (offset = GetObjFieldOffset(contObj.GetAddress(), contObj.GetMT(), W("_continuation"))) != 0)
+                    {
+                        MOVE(*contAddr, contObj.GetAddress() + offset);
+                        if (sos::IsObject(*contAddr, false))
+                        {
+                            contObj = TO_TADDR(*contAddr);
+                            if ((offset = GetObjFieldOffset(contObj.GetAddress(), contObj.GetMT(), W("_target"))) != 0)
+                            {
+                                MOVE(*contAddr, contObj.GetAddress() + offset);
+                                if (sos::IsObject(*contAddr, false))
+                                {
+                                    contObj = TO_TADDR(*contAddr);
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -4586,7 +4605,7 @@ DECLARE_API(DumpAsync)
                             DacpObjectData objData;
                             if (objData.Request(g_sos, TO_CDADDR(listItemsPtr)) == S_OK && objData.ObjectType == OBJ_ARRAY)
                             {
-                                for (int i = 0; i < objData.dwNumComponents; i++)
+                                for (SIZE_T i = 0; i < objData.dwNumComponents; i++)
                                 {
                                     CLRDATA_ADDRESS elementPtr;
                                     MOVE(elementPtr, TO_CDADDR(objData.ArrayDataPtr + (i * objData.dwComponentSize)));
@@ -5663,8 +5682,6 @@ DECLARE_API(SyncBlk)
     return Status;
 }
 
-#ifndef FEATURE_PAL
-
 #ifdef FEATURE_COMINTEROP
 struct VisitRcwArgs
 {
@@ -5749,7 +5766,6 @@ DECLARE_API(RCWCleanupList)
     return Status;
 }
 #endif // FEATURE_COMINTEROP
-
 
 /**********************************************************************\
 * Routine Description:                                                 *
@@ -5892,8 +5908,6 @@ DECLARE_API(FinalizeQueue)
 
     return Status;
 }
-
-#endif // FEATURE_PAL
 
 enum {
     // These are the values set in m_dwTransientFlags.
@@ -6547,10 +6561,6 @@ HRESULT PrintSpecialThreads()
         if (ThreadType & ThreadType_Finalizer)
         {
             type += "Finalizer ";
-        }
-        if (ThreadType & ThreadType_ADUnloadHelper)
-        {
-            type += "ADUnloadHelper ";
         }
         if (ThreadType & ThreadType_ShutdownHelper)
         {
@@ -9419,8 +9429,7 @@ DECLARE_API(DumpLog)
     return Status;
 }
 
-#ifdef TRACE_GC
-
+#ifndef FEATURE_PAL
 DECLARE_API (DumpGCLog)
 {
     INIT_API_NODAC();
@@ -9433,6 +9442,10 @@ DECLARE_API (DumpGCLog)
     }
 
     const char* fileName = "GCLog.txt";
+    int iLogSize = 1024*1024;
+    BYTE* bGCLog = NULL;
+    int iRealLogSize = iLogSize - 1;
+    DWORD dwWritten = 0;
 
     while (isspace (*args))
         args ++;
@@ -9477,8 +9490,7 @@ DECLARE_API (DumpGCLog)
         goto exit;
     }
 
-    int iLogSize = 1024*1024;
-    BYTE* bGCLog = new NOTHROW BYTE[iLogSize];
+    bGCLog = new NOTHROW BYTE[iLogSize];
     if (bGCLog == NULL)
     {
         ReportOOM();
@@ -9491,7 +9503,6 @@ DECLARE_API (DumpGCLog)
         ExtOut("failed to read memory from %08x\n", dwAddr);
     }
 
-    int iRealLogSize = iLogSize - 1;
     while (iRealLogSize >= 0)
     {
         if (bGCLog[iRealLogSize] != '*')
@@ -9502,12 +9513,16 @@ DECLARE_API (DumpGCLog)
         iRealLogSize--;
     }
 
-    DWORD dwWritten = 0;
     WriteFile (hGCLog, bGCLog, iRealLogSize + 1, &dwWritten, NULL);
 
     Status = S_OK;
 
 exit:
+
+    if (bGCLog != NULL)
+    {
+        delete [] bGCLog;
+    }
 
     if (hGCLog != INVALID_HANDLE_VALUE)
     {
@@ -9523,9 +9538,7 @@ exit:
 
     return Status;
 }
-#endif //TRACE_GC
 
-#ifndef FEATURE_PAL
 DECLARE_API (DumpGCConfigLog)
 {
     INIT_API();
@@ -15151,7 +15164,7 @@ DECLARE_API(ExposeDML)
 // According to kksharma the Windows debuggers always sign-extend
 // arguments when calling externally, therefore StackObjAddr 
 // conforms to CLRDATA_ADDRESS contract.
-HRESULT CALLBACK 
+HRESULT CALLBACK
 _EFN_GetManagedExcepStack(
     PDEBUG_CLIENT client,
     ULONG64 StackObjAddr,
@@ -15198,7 +15211,7 @@ _EFN_GetManagedExcepStackW(
 // According to kksharma the Windows debuggers always sign-extend
 // arguments when calling externally, therefore objAddr 
 // conforms to CLRDATA_ADDRESS contract.
-HRESULT CALLBACK 
+HRESULT CALLBACK
 _EFN_GetManagedObjectName(
     PDEBUG_CLIENT client,
     ULONG64 objAddr,
@@ -15226,7 +15239,7 @@ _EFN_GetManagedObjectName(
 // According to kksharma the Windows debuggers always sign-extend
 // arguments when calling externally, therefore objAddr 
 // conforms to CLRDATA_ADDRESS contract.
-HRESULT CALLBACK 
+HRESULT CALLBACK
 _EFN_GetManagedObjectFieldInfo(
     PDEBUG_CLIENT client,
     ULONG64 objAddr,
@@ -15531,7 +15544,7 @@ GetStackFrame(CONTEXT* context, ULONG numNativeFrames)
     if (FAILED(hr))
     {
         PDEBUG_STACK_FRAME frame = &g_Frames[0];
-        for (int i = 0; i < numNativeFrames; i++, frame++) {
+        for (unsigned int i = 0; i < numNativeFrames; i++, frame++) {
             if (frame->InstructionOffset == context->Rip)
             {
                 if ((i + 1) >= numNativeFrames) {

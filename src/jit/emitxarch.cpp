@@ -145,6 +145,75 @@ bool emitter::IsDstSrcSrcAVXInstruction(instruction ins)
     return ((CodeGenInterface::instInfo[ins] & INS_Flags_IsDstSrcSrcAVXInstruction) != 0) && IsAVXInstruction(ins);
 }
 
+//------------------------------------------------------------------------
+// AreUpper32BitsZero: check if some previously emitted
+//     instruction set the upper 32 bits of reg to zero.
+//
+// Arguments:
+//    reg - register of interest
+//
+// Return Value:
+//    true if previous instruction zeroed reg's upper 32 bits.
+//    false if it did not, or if we can't safely determine.
+//
+// Notes:
+//    Currently only looks back one instruction.
+//
+//    movsx eax, ... might seem viable but we always encode this
+//    instruction with a 64 bit destination. See TakesRexWPrefix.
+
+bool emitter::AreUpper32BitsZero(regNumber reg)
+{
+    // Don't look back across IG boundaries (possible control flow)
+    if (emitCurIGinsCnt == 0)
+    {
+        return false;
+    }
+
+    instrDesc* id  = emitLastIns;
+    insFormat  fmt = id->idInsFmt();
+
+    // This isn't meant to be a comprehensive check. Just look for what
+    // seems to be common.
+    switch (fmt)
+    {
+        case IF_RWR_CNS:
+        case IF_RRW_CNS:
+        case IF_RRW_SHF:
+        case IF_RWR_RRD:
+        case IF_RRW_RRD:
+        case IF_RWR_MRD:
+        case IF_RWR_SRD:
+        case IF_RWR_ARD:
+
+            // Bail if not writing to the right register
+            if (id->idReg1() != reg)
+            {
+                return false;
+            }
+
+            // Bail if movsx, we always have movsx sign extend to 8 bytes
+            if (id->idIns() == INS_movsx)
+            {
+                return false;
+            }
+
+            // movzx always zeroes the upper 32 bits.
+            if (id->idIns() == INS_movzx)
+            {
+                return true;
+            }
+
+            // Else rely on operation size.
+            return (id->idOpSize() == EA_4BYTE);
+
+        default:
+            break;
+    }
+
+    return false;
+}
+
 #ifdef FEATURE_HW_INTRINSICS
 //------------------------------------------------------------------------
 // IsDstSrcImmAvxInstruction: Checks if the instruction has a "reg, reg/mem, imm" or
@@ -352,9 +421,11 @@ bool TakesRexWPrefix(instruction ins, emitAttr attr)
         switch (ins)
         {
             case INS_andn:
+            case INS_bextr:
             case INS_blsi:
             case INS_blsmsk:
             case INS_blsr:
+            case INS_bzhi:
             case INS_cvttsd2si:
             case INS_cvttss2si:
             case INS_cvtsd2si:
@@ -364,6 +435,7 @@ bool TakesRexWPrefix(instruction ins, emitAttr attr)
             case INS_mov_xmm2i:
             case INS_mov_i2xmm:
             case INS_movnti:
+            case INS_mulx:
             case INS_pdep:
             case INS_pext:
                 return true;
@@ -601,6 +673,7 @@ unsigned emitter::emitOutputRexOrVexPrefixIfNeeded(instruction ins, BYTE* dst, c
                             switch (ins)
                             {
                                 case INS_pdep:
+                                case INS_mulx:
                                 {
                                     vexPrefix |= 0x03;
                                     break;
@@ -1027,9 +1100,11 @@ bool emitter::emitInsCanOnlyWriteSSE2OrAVXReg(instrDesc* id)
     switch (ins)
     {
         case INS_andn:
+        case INS_bextr:
         case INS_blsi:
         case INS_blsmsk:
         case INS_blsr:
+        case INS_bzhi:
         case INS_cvttsd2si:
         case INS_cvttss2si:
         case INS_cvtsd2si:
@@ -1038,6 +1113,7 @@ bool emitter::emitInsCanOnlyWriteSSE2OrAVXReg(instrDesc* id)
         case INS_mov_xmm2i:
         case INS_movmskpd:
         case INS_movmskps:
+        case INS_mulx:
         case INS_pdep:
         case INS_pext:
         case INS_pmovmskb:
@@ -2052,6 +2128,8 @@ UNATIVE_OFFSET emitter::emitInsSizeAM(instrDesc* id, code_t code)
         size += emitGetRexPrefixSize(ins);
     }
 
+    size += emitAdjustSizeCrc32(ins, attrSize);
+
     if (rgx == REG_NA)
     {
         /* The address is of the form "[reg+disp]" */
@@ -2218,19 +2296,21 @@ inline UNATIVE_OFFSET emitter::emitInsSizeAM(instrDesc* id, code_t code, int val
 
 inline UNATIVE_OFFSET emitter::emitInsSizeCV(instrDesc* id, code_t code)
 {
-    instruction ins = id->idIns();
+    instruction ins      = id->idIns();
+    emitAttr    attrSize = id->idOpSize();
 
     // fgMorph changes any statics that won't fit into 32-bit addresses
     // into constants with an indir, rather than GT_CLS_VAR
     // so we should only hit this path for statics that are RIP-relative
     UNATIVE_OFFSET size = sizeof(INT32);
 
-    size += emitGetVexPrefixAdjustedSize(ins, id->idOpSize(), code);
+    size += emitGetVexPrefixAdjustedSize(ins, attrSize, code);
+    size += emitAdjustSizeCrc32(ins, attrSize);
 
     // Most 16-bit operand instructions will need a prefix.
     // This refers to 66h size prefix override.
 
-    if (id->idOpSize() == EA_2BYTE && ins != INS_movzx && ins != INS_movsx)
+    if (attrSize == EA_2BYTE && ins != INS_movzx && ins != INS_movsx)
     {
         size++;
     }
@@ -2327,33 +2407,15 @@ emitter::instrDesc* emitter::emitNewInstrAmdCns(emitAttr size, ssize_t dsp, int 
 {
     if (dsp >= AM_DISP_MIN && dsp <= AM_DISP_MAX)
     {
-        if (cns >= ID_MIN_SMALL_CNS && cns <= ID_MAX_SMALL_CNS)
-        {
-            instrDesc* id = emitAllocInstr(size);
+        instrDesc* id                    = emitNewInstrCns(size, cns);
+        id->idAddr()->iiaAddrMode.amDisp = dsp;
+        assert(id->idAddr()->iiaAddrMode.amDisp == dsp); // make sure the value fit
 
-            id->idSmallCns(cns);
-
-            id->idAddr()->iiaAddrMode.amDisp = dsp;
-            assert(id->idAddr()->iiaAddrMode.amDisp == dsp); // make sure the value fit
-
-            return id;
-        }
-        else
-        {
-            instrDescCns* id = emitAllocInstrCns(size);
-
-            id->idSetIsLargeCns();
-            id->idcCnsVal = cns;
-
-            id->idAddr()->iiaAddrMode.amDisp = dsp;
-            assert(id->idAddr()->iiaAddrMode.amDisp == dsp); // make sure the value fit
-
-            return id;
-        }
+        return id;
     }
     else
     {
-        if (cns >= ID_MIN_SMALL_CNS && cns <= ID_MAX_SMALL_CNS)
+        if (instrDesc::fitsInSmallCns(cns))
         {
             instrDescAmd* id = emitAllocInstrAmd(size);
 
@@ -2787,6 +2849,12 @@ void emitter::emitInsLoadInd(instruction ins, emitAttr attr, regNumber dstReg, G
     id->idReg1(dstReg);
     emitHandleMemOp(mem, id, IF_RWR_ARD, ins);
     UNATIVE_OFFSET sz = emitInsSizeAM(id, insCodeRM(ins));
+    if (Is4ByteSSEInstruction(ins))
+    {
+        // The 4-Byte SSE instructions require an additional byte.
+        sz += 1;
+    }
+
     id->idCodeSize(sz);
     dispIns(id);
     emitCurIGsize += sz;
@@ -3975,6 +4043,12 @@ void emitter::emitIns_R_A(instruction ins, emitAttr attr, regNumber reg1, GenTre
     emitHandleMemOp(indir, id, IF_RRW_ARD, ins);
 
     UNATIVE_OFFSET sz = emitInsSizeAM(id, insCodeRM(ins));
+    if (Is4ByteSSEInstruction(ins))
+    {
+        // The 4-Byte SSE instructions require an additional byte.
+        sz += 1;
+    }
+
     id->idCodeSize(sz);
 
     dispIns(id);
@@ -4026,8 +4100,8 @@ void emitter::emitIns_R_AR_I(instruction ins, emitAttr attr, regNumber reg1, reg
 
     if (Is4ByteSSEInstruction(ins))
     {
-        // The 4-Byte SSE instructions require two additional bytes
-        sz += 2;
+        // The 4-Byte SSE instructions require an additional byte.
+        sz += 1;
     }
 
     id->idCodeSize(sz);
@@ -5103,8 +5177,8 @@ void emitter::emitIns_R_AR(instruction ins, emitAttr attr, regNumber ireg, regNu
 
     if (Is4ByteSSEInstruction(ins))
     {
-        // The 4-Byte SSE instructions require two additional bytes
-        sz += 2;
+        // The 4-Byte SSE instructions require an additional byte.
+        sz += 1;
     }
 
     id->idCodeSize(sz);
@@ -5173,6 +5247,40 @@ void emitter::emitIns_AR_R(instruction ins, emitAttr attr, regNumber ireg, regNu
     emitCurIGsize += sz;
 
     emitAdjustStackDepthPushPop(ins);
+}
+
+//------------------------------------------------------------------------
+// emitIns_S_R_I: emits the code for an instruction that takes a stack operand,
+//                a register operand, and an immediate.
+//
+// Arguments:
+//    ins       - The instruction being emitted
+//    attr      - The emit attribute
+//    varNum    - The varNum of the stack operand
+//    offs      - The offset for the stack operand
+//    reg       - The register operand
+//    ival      - The immediate value
+//
+void emitter::emitIns_S_R_I(instruction ins, emitAttr attr, int varNum, int offs, regNumber reg, int ival)
+{
+    // This is only used for INS_vextracti128 and INS_vextractf128, and for these 'ival' must be 0 or 1.
+    assert(ins == INS_vextracti128 || ins == INS_vextractf128);
+    assert((ival == 0) || (ival == 1));
+    instrDesc* id = emitNewInstrAmdCns(attr, 0, ival);
+
+    id->idIns(ins);
+    id->idInsFmt(IF_SWR_RRD_CNS);
+    id->idReg1(reg);
+    id->idAddr()->iiaLclVar.initLclVarAddr(varNum, offs);
+#ifdef DEBUG
+    id->idDebugOnlyInfo()->idVarRefOffs = emitVarRefOffs;
+#endif
+
+    UNATIVE_OFFSET sz = emitInsSizeSV(id, insCodeMR(ins), varNum, offs, ival);
+    id->idCodeSize(sz);
+
+    dispIns(id);
+    emitCurIGsize += sz;
 }
 
 void emitter::emitIns_AR_R_I(instruction ins, emitAttr attr, regNumber base, int disp, regNumber ireg, int ival)
@@ -5578,7 +5686,7 @@ void emitter::emitIns_AX_R(instruction ins, emitAttr attr, regNumber ireg, regNu
 
 #ifdef FEATURE_HW_INTRINSICS
 //------------------------------------------------------------------------
-// emitIns_SIMD_R_R_I: emits the code for a SIMD instruction that takes a register operand, an immediate operand
+// emitIns_SIMD_R_R_I: emits the code for an instruction that takes a register operand, an immediate operand
 //                     and that returns a value in register
 //
 // Arguments:
@@ -5587,6 +5695,13 @@ void emitter::emitIns_AX_R(instruction ins, emitAttr attr, regNumber ireg, regNu
 //    targetReg -- The target register
 //    op1Reg    -- The register of the first operand
 //    ival      -- The immediate value
+//
+// Notes:
+//    This will handle the required register copy if 'op1Reg' and 'targetReg' are not the same, and
+//    the 3-operand format is not available.
+//    This is not really SIMD-specific, but is currently only used in that context, as that's
+//    where we frequently need to handle the case of generating 3-operand or 2-operand forms
+//    depending on what target ISA is supported.
 //
 void emitter::emitIns_SIMD_R_R_I(instruction ins, emitAttr attr, regNumber targetReg, regNumber op1Reg, int ival)
 {
@@ -5642,12 +5757,14 @@ void emitter::emitIns_SIMD_R_R_A(
 //    targetReg -- The target register
 //    op1Reg    -- The register of the first operand
 //    base      -- The base register used for the memory address
+//    offset    -- The memory offset
 //
-void emitter::emitIns_SIMD_R_R_AR(instruction ins, emitAttr attr, regNumber targetReg, regNumber op1Reg, regNumber base)
+void emitter::emitIns_SIMD_R_R_AR(
+    instruction ins, emitAttr attr, regNumber targetReg, regNumber op1Reg, regNumber base, int offset)
 {
     if (UseVEXEncoding())
     {
-        emitIns_R_R_AR(ins, attr, targetReg, op1Reg, base, 0);
+        emitIns_R_R_AR(ins, attr, targetReg, op1Reg, base, offset);
     }
     else
     {
@@ -5655,7 +5772,7 @@ void emitter::emitIns_SIMD_R_R_AR(instruction ins, emitAttr attr, regNumber targ
         {
             emitIns_R_R(INS_movaps, attr, targetReg, op1Reg);
         }
-        emitIns_R_AR(ins, attr, targetReg, base, 0);
+        emitIns_R_AR(ins, attr, targetReg, base, offset);
     }
 }
 
@@ -6501,10 +6618,7 @@ void emitter::emitIns_R_S(instruction ins, emitAttr attr, regNumber ireg, int va
         sz += emitGetRexPrefixSize(ins);
     }
 
-    if (ins == INS_crc32)
-    {
-        sz += 1;
-    }
+    sz += emitAdjustSizeCrc32(ins, attr);
 
     id->idIns(ins);
     id->idInsFmt(fmt);
@@ -6857,92 +6971,6 @@ void emitter::emitIns_Call(EmitCallType          callType,
     // Our stack level should be always greater than the bytes of arguments we push. Just
     // a sanity test.
     assert((unsigned)abs((signed)argSize) <= codeGen->genStackLevel);
-
-#if STACK_PROBES
-    if (emitComp->opts.compNeedStackProbes)
-    {
-        // If we've pushed more than JIT_RESERVED_STACK allows, do an additional stack probe
-        // Else, just make sure the prolog does a probe for us. Invariant we're trying
-        // to get is that at any point we go out to unmanaged code, there is at least
-        // CORINFO_STACKPROBE_DEPTH bytes of stack available.
-        //
-        // The reason why we are not doing one probe for the max size at the prolog
-        // is that when don't have the max depth precomputed (it can depend on codegen),
-        // and we need it at the time we generate locallocs
-        //
-        // Compiler::lvaAssignFrameOffsets sets up compLclFrameSize, which takes in
-        // account everything except for the arguments of a callee.
-        //
-        //
-        //
-        if ((TARGET_POINTER_SIZE + // return address for call
-             emitComp->genStackLevel +
-             // Current stack level. This gets resetted on every
-             // localloc and on the prolog (invariant is that
-             // genStackLevel is 0 on basic block entry and exit and
-             // after any alloca). genStackLevel will include any arguments
-             // to the call, so we will insert an additional probe if
-             // we've consumed more than JIT_RESERVED_STACK bytes
-             // of stack, which is what the prolog probe covers (in
-             // addition to the EE requested size)
-             (emitComp->compHndBBtabCount * TARGET_POINTER_SIZE)
-             // Hidden slots for calling finallys
-             ) >= JIT_RESERVED_STACK)
-        {
-            // This happens when you have a call with a lot of arguments or a call is done
-            // when there's a lot of stuff pushed on the stack (for example a call whos returned
-            // value is an argument of another call that has pushed stuff on the stack)
-            // This should't be very frequent.
-            // For different values of JIT_RESERVED_STACK
-            //
-            // For mscorlib (109605 calls)
-            //
-            // 14190 probes in prologs (56760 bytes of code)
-            //
-            // JIT_RESERVED_STACK = 16 : 5452 extra probes
-            // JIT_RESERVED_STACK = 32 : 1084 extra probes
-            // JIT_RESERVED_STACK = 64 :    1 extra probes
-            // JIT_RESERVED_STACK = 96 :    0 extra probes
-            emitComp->genGenerateStackProbe();
-        }
-        else
-        {
-            if (emitComp->compGeneratingProlog || emitComp->compGeneratingEpilog)
-            {
-                if (emitComp->compStackProbePrologDone)
-                {
-                    // We already generated a probe and this call is not happening
-                    // at a depth >= JIT_RESERVED_STACK, so nothing to do here
-                }
-                else
-                {
-                    // 3 possible ways to get here:
-                    // - We are in an epilog and haven't generated a probe in the prolog.
-                    //   This shouldn't happen as we don't generate any calls in epilog.
-                    // - We are in the prolog, but doing a call before generating the probe.
-                    //   This shouldn't happen at all.
-                    // - We are in the prolog, did not generate a probe but now we need
-                    //   to generate a probe because we need a call (eg: profiler). We'll
-                    //   need a probe.
-                    //
-                    // In any case, we need a probe
-
-                    // Ignore the profiler callback for now.
-                    if (!emitComp->compIsProfilerHookNeeded())
-                    {
-                        assert(!"We do not expect to get here");
-                        emitComp->genGenerateStackProbe();
-                    }
-                }
-            }
-            else
-            {
-                // We will need a probe and will generate it in the prolog
-                emitComp->genNeedPrologStackProbe = true;
-            }
-        }
-    }
-#endif // STACK_PROBES
 
     // Trim out any callee-trashed registers from the live set.
     regMaskTP savedSet = emitGetGCRegsSavedOrModified(methHnd);
@@ -8195,7 +8223,7 @@ void emitter::emitDispIns(
 
     sstr = codeGen->genInsName(ins);
 
-    if (IsAVXInstruction(ins))
+    if (IsAVXInstruction(ins) && !IsBMIInstruction(ins))
     {
         printf(" v%-8s", sstr);
     }
@@ -8341,24 +8369,21 @@ void emitter::emitDispIns(
 #ifdef _TARGET_AMD64_
             if (ins == INS_movsxd)
             {
-                printf("%s, %s", emitRegName(id->idReg1(), EA_8BYTE), sstr);
+                attr = EA_8BYTE;
             }
             else
 #endif
                 if (ins == INS_movsx || ins == INS_movzx)
             {
-                printf("%s, %s", emitRegName(id->idReg1(), EA_PTRSIZE), sstr);
+                attr = EA_PTRSIZE;
             }
             else if ((ins == INS_crc32) && (attr != EA_8BYTE))
             {
                 // The idReg1 is always 4 bytes, but the size of idReg2 can vary.
                 // This logic ensures that we print `crc32 eax, bx` instead of `crc32 ax, bx`
-                printf("%s, %s", emitRegName(id->idReg1(), EA_4BYTE), emitRegName(id->idReg2(), attr));
+                attr = EA_4BYTE;
             }
-            else
-            {
-                printf("%s, %s", emitRegName(id->idReg1(), attr), sstr);
-            }
+            printf("%s, %s", emitRegName(id->idReg1(), attr), sstr);
             emitDispAddrMode(id);
             break;
 
@@ -8576,31 +8601,53 @@ void emitter::emitDispIns(
             }
             break;
 
+        case IF_SWR_RRD_CNS:
+            assert(ins == INS_vextracti128 || ins == INS_vextractf128);
+            assert(UseVEXEncoding());
+            emitGetInsAmdCns(id, &cnsVal);
+
+            printf("%s", sstr);
+
+            emitDispFrameRef(id->idAddr()->iiaLclVar.lvaVarNum(), id->idAddr()->iiaLclVar.lvaOffset(),
+                             id->idDebugOnlyInfo()->idVarRefOffs, asmfm);
+
+            printf(", %s", emitRegName(id->idReg1(), attr));
+
+            val = cnsVal.cnsVal;
+            printf(", ");
+
+            if (cnsVal.cnsReloc)
+            {
+                emitDispReloc(val);
+            }
+            else
+            {
+                goto PRINT_CONSTANT;
+            }
+            break;
+
         case IF_RRD_SRD:
         case IF_RWR_SRD:
         case IF_RRW_SRD:
 #ifdef _TARGET_AMD64_
             if (ins == INS_movsxd)
             {
-                printf("%s, %s", emitRegName(id->idReg1(), EA_8BYTE), sstr);
+                attr = EA_8BYTE;
             }
             else
 #endif
                 if (ins == INS_movsx || ins == INS_movzx)
             {
-                printf("%s, %s", emitRegName(id->idReg1(), EA_PTRSIZE), sstr);
+                attr = EA_PTRSIZE;
             }
             else if ((ins == INS_crc32) && (attr != EA_8BYTE))
             {
                 // The idReg1 is always 4 bytes, but the size of idReg2 can vary.
                 // This logic ensures that we print `crc32 eax, bx` instead of `crc32 ax, bx`
-                printf("%s, %s", emitRegName(id->idReg1(), EA_4BYTE), emitRegName(id->idReg2(), attr));
-            }
-            else
-            {
-                printf("%s, %s", emitRegName(id->idReg1(), attr), sstr);
+                attr = EA_4BYTE;
             }
 
+            printf("%s, %s", emitRegName(id->idReg1(), attr), sstr);
             emitDispFrameRef(id->idAddr()->iiaLclVar.lvaVarNum(), id->idAddr()->iiaLclVar.lvaOffset(),
                              id->idDebugOnlyInfo()->idVarRefOffs, asmfm);
 
@@ -8727,12 +8774,25 @@ void emitter::emitDispIns(
             break;
 
         case IF_RWR_RRD_RRD:
+        {
             assert(IsAVXInstruction(ins));
             assert(IsThreeOperandAVXInstruction(ins));
+            regNumber reg2 = id->idReg2();
+            regNumber reg3 = id->idReg3();
+            if (ins == INS_bextr || ins == INS_bzhi)
+            {
+                // BMI bextr and bzhi encodes the reg2 in VEX.vvvv and reg3 in modRM,
+                // which is different from most of other instructions
+                regNumber tmp = reg2;
+                reg2          = reg3;
+                reg3          = tmp;
+            }
             printf("%s, ", emitRegName(id->idReg1(), attr));
-            printf("%s, ", emitRegName(id->idReg2(), attr));
-            printf("%s", emitRegName(id->idReg3(), attr));
+            printf("%s, ", emitRegName(reg2, attr));
+            printf("%s", emitRegName(reg3, attr));
             break;
+        }
+
         case IF_RWR_RRD_RRD_CNS:
             assert(IsAVXInstruction(ins));
             assert(IsThreeOperandAVXInstruction(ins));
@@ -8799,7 +8859,7 @@ void emitter::emitDispIns(
             {
                 // The idReg1 is always 4 bytes, but the size of idReg2 can vary.
                 // This logic ensures that we print `crc32 eax, bx` instead of `crc32 ax, bx`
-                printf("%s, %s", emitRegName(id->idReg1(), EA_4BYTE), emitRegName(id->idReg2(), attr));
+                attr = EA_4BYTE;
             }
             printf("%s, %s", emitRegName(id->idReg1(), attr), sstr);
             offs = emitGetInsDsp(id);
@@ -9276,15 +9336,19 @@ BYTE* emitter::emitOutputAM(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
         goto GOT_DSP;
     }
 
-    // Is there a large constant operand?
+    // `addc` is used for two kinds if instructions
+    // 1. ins like ADD that can have reg/mem and const versions both and const version needs to modify the opcode for
+    // large constant operand (e.g., imm32)
+    // 2. certain SSE/AVX ins have const operand as control bits that is always 1-Byte (imm8) even if `size` > 1-Byte
     if (addc && (size > EA_1BYTE))
     {
         ssize_t cval = addc->cnsVal;
 
         // Does the constant fit in a byte?
+        // SSE/AVX do not need to modify opcode
         if ((signed char)cval == cval && addc->cnsReloc == false && ins != INS_mov && ins != INS_test)
         {
-            if (id->idInsFmt() != IF_ARW_SHF)
+            if (id->idInsFmt() != IF_ARW_SHF && !IsSSEOrAVXInstruction(ins))
             {
                 code |= 2;
             }
@@ -9536,7 +9600,7 @@ GOT_DSP:
 
                     if (addc)
                     {
-                        // It is of the form "ins [disp], immed"
+                        // It is of the form "ins [disp], imm" or "ins reg, [disp], imm"
                         // For emitting relocation, we also need to take into account of the
                         // additional bytes of code emitted for immed val.
 
@@ -10093,16 +10157,20 @@ BYTE* emitter::emitOutputSV(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
 
     assert(ins != INS_imul || id->idReg1() == REG_EAX || size == EA_4BYTE || size == EA_8BYTE);
 
-    // Is there a large constant operand?
+    // `addc` is used for two kinds if instructions
+    // 1. ins like ADD that can have reg/mem and const versions both and const version needs to modify the opcode for
+    // large constant operand (e.g., imm32)
+    // 2. certain SSE/AVX ins have const operand as control bits that is always 1-Byte (imm8) even if `size` > 1-Byte
     if (addc && (size > EA_1BYTE))
     {
         ssize_t cval = addc->cnsVal;
 
         // Does the constant fit in a byte?
+        // SSE/AVX do not need to modify opcode
         if ((signed char)cval == cval && addc->cnsReloc == false && ins != INS_mov && ins != INS_test)
         {
             if ((id->idInsFmt() != IF_SRW_SHF) && (id->idInsFmt() != IF_RRW_SRD_CNS) &&
-                (id->idInsFmt() != IF_RWR_RRD_SRD_CNS))
+                (id->idInsFmt() != IF_RWR_RRD_SRD_CNS) && !IsSSEOrAVXInstruction(ins))
             {
                 code |= 2;
             }
@@ -10536,14 +10604,18 @@ BYTE* emitter::emitOutputCV(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
         code = AddRexWPrefix(ins, code);
     }
 
-    // Is there a large constant operand?
+    // `addc` is used for two kinds if instructions
+    // 1. ins like ADD that can have reg/mem and const versions both and const version needs to modify the opcode for
+    // large constant operand (e.g., imm32)
+    // 2. certain SSE/AVX ins have const operand as control bits that is always 1-Byte (imm8) even if `size` > 1-Byte
     if (addc && (size > EA_1BYTE))
     {
         ssize_t cval = addc->cnsVal;
         // Does the constant fit in a byte?
         if ((signed char)cval == cval && addc->cnsReloc == false && ins != INS_mov && ins != INS_test)
         {
-            if (id->idInsFmt() != IF_MRW_SHF)
+            // SSE/AVX do not need to modify opcode
+            if (id->idInsFmt() != IF_MRW_SHF && !IsSSEOrAVXInstruction(ins))
             {
                 code |= 2;
             }
@@ -10772,7 +10844,7 @@ BYTE* emitter::emitOutputCV(BYTE* dst, instrDesc* id, code_t code, CnsVal* addc)
 
         if (addc)
         {
-            // It is of the form "ins [disp], immed"
+            // It is of the form "ins [disp], imm" or "ins reg, [disp], imm"
             // For emitting relocation, we also need to take into account of the
             // additional bytes of code emitted for immed val.
 
@@ -11073,8 +11145,8 @@ BYTE* emitter::emitOutputR(BYTE* dst, instrDesc* id)
         case INS_seta:
         case INS_sets:
         case INS_setns:
-        case INS_setpe:
-        case INS_setpo:
+        case INS_setp:
+        case INS_setnp:
         case INS_setl:
         case INS_setge:
         case INS_setle:
@@ -12264,8 +12336,8 @@ BYTE* emitter::emitOutputLJ(BYTE* dst, instrDesc* i)
             assert(INS_ja  + (INS_l_jmp - INS_jmp) == INS_l_ja);
             assert(INS_js  + (INS_l_jmp - INS_jmp) == INS_l_js);
             assert(INS_jns + (INS_l_jmp - INS_jmp) == INS_l_jns);
-            assert(INS_jpe + (INS_l_jmp - INS_jmp) == INS_l_jpe);
-            assert(INS_jpo + (INS_l_jmp - INS_jmp) == INS_l_jpo);
+            assert(INS_jp  + (INS_l_jmp - INS_jmp) == INS_l_jp);
+            assert(INS_jnp + (INS_l_jmp - INS_jmp) == INS_l_jnp);
             assert(INS_jl  + (INS_l_jmp - INS_jmp) == INS_l_jl);
             assert(INS_jge + (INS_l_jmp - INS_jmp) == INS_l_jge);
             assert(INS_jle + (INS_l_jmp - INS_jmp) == INS_l_jle);
@@ -12949,6 +13021,7 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
 
         case IF_RRW_ARD_CNS:
         case IF_RWR_ARD_CNS:
+            assert(IsSSEOrAVXInstruction(ins));
             emitGetInsAmdCns(id, &cnsVal);
             code = insCodeRM(ins);
 
@@ -13008,6 +13081,7 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
         case IF_RWR_RRD_ARD_CNS:
         case IF_RWR_RRD_ARD_RRD:
         {
+            assert(IsSSEOrAVXInstruction(ins));
             emitGetInsAmdCns(id, &cnsVal);
             code = insCodeRM(ins);
             if (EncodedBySSE38orSSE3A(ins))
@@ -13105,8 +13179,18 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
             sz  = emitSizeOfInsDsc(id);
             break;
 
+        case IF_SWR_RRD_CNS:
+            assert(ins == INS_vextracti128 || ins == INS_vextractf128);
+            assert(UseVEXEncoding());
+            emitGetInsAmdCns(id, &cnsVal);
+            code = insCodeMR(ins);
+            dst  = emitOutputSV(dst, id, insCodeMR(ins), &cnsVal);
+            sz   = emitSizeOfInsDsc(id);
+            break;
+
         case IF_RRW_SRD_CNS:
         case IF_RWR_SRD_CNS:
+            assert(IsSSEOrAVXInstruction(ins));
             emitGetInsCns(id, &cnsVal);
             code = insCodeRM(ins);
 
@@ -13261,6 +13345,7 @@ size_t emitter::emitOutputInstr(insGroup* ig, instrDesc* id, BYTE** dp)
 
         case IF_RRW_MRD_CNS:
         case IF_RWR_MRD_CNS:
+            assert(IsSSEOrAVXInstruction(ins));
             emitGetInsDcmCns(id, &cnsVal);
             code = insCodeRM(ins);
 

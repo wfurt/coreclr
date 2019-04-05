@@ -449,7 +449,8 @@ private:
     ComMethodTable* CreateComMethodTableForBasic(MethodTable* pClassMT);
     ComMethodTable* CreateComMethodTableForDelegate(MethodTable *pDelegateMT);
 
-    void            DetermineComVisibility();
+    void DetermineComVisibility();
+    ComCallWrapperTemplate* FindInvisibleParent();
 
 private:
     LONG                                    m_cbRefCount;
@@ -996,8 +997,6 @@ private:
     };
     
 public:
-    ADID GetDomainID();
-
     VOID ResetHandleStrength();
     VOID MarkHandleWeak();
 
@@ -1206,7 +1205,6 @@ public:
             WRAPPER(GC_TRIGGERS);
             MODE_COOPERATIVE;
             PRECONDITION(CheckPointer(m_ppThis));
-            SO_TOLERANT;
         }
         CONTRACT_END;
 
@@ -1295,7 +1293,6 @@ public:
             INSTANCE_CHECK;
             POSTCONDITION(CheckPointer(RETVAL));
             SUPPORTS_DAC;
-            SO_TOLERANT;
         }
         CONTRACT_END;
         
@@ -1376,9 +1373,7 @@ typedef DPTR(class WeakReferenceImpl) PTR_WeakReferenceImpl;
 class WeakReferenceImpl : public IUnknownCommon<IWeakReference>
 {
 private:
-    ADID                m_adid;                 // AppDomain ID of where this weak reference is created
     OBJECTHANDLE        m_ppObject;             // Short weak global handle points back to the object, 
-                                                // created in domain ID = m_adid
     
 public:
     WeakReferenceImpl(SimpleComCallWrapper *pSimpleWrapper, Thread *pCurrentThread);
@@ -1552,7 +1547,6 @@ public:
             WRAPPER(THROWS);
             WRAPPER(GC_TRIGGERS);
             MODE_COOPERATIVE;
-            SO_TOLERANT;
         }
         CONTRACT_END;
         
@@ -1576,25 +1570,6 @@ public:
     // Connection point helper methods.
     BOOL FindConnectionPoint(REFIID riid, IConnectionPoint **ppCP);
     void EnumConnectionPoints(IEnumConnectionPoints **ppEnumCP);
-
-    ADID GetDomainID()
-    {
-        CONTRACTL
-        {
-            WRAPPER(THROWS);
-            WRAPPER(GC_TRIGGERS);
-            MODE_ANY;
-        }
-        CONTRACTL_END;
-
-        return m_dwDomainId;
-    }
-
-    ADID GetRawDomainID()
-    {
-        LIMITED_METHOD_DAC_CONTRACT;
-        return m_dwDomainId;
-    }
 
     // is the object aggregated by a COM component
     BOOL IsAggregated()
@@ -1694,7 +1669,6 @@ public:
             MODE_ANY;
             PRECONDITION(CheckPointer(pUnk));
             POSTCONDITION(CheckPointer(RETVAL));
-            SO_TOLERANT;
             SUPPORTS_DAC;
         }
         CONTRACT_END;
@@ -1719,7 +1693,6 @@ public:
             SUPPORTS_DAC;
             INSTANCE_CHECK;
             POSTCONDITION(CheckPointer(RETVAL));
-            SO_TOLERANT;
         }
         CONTRACT_END;
         
@@ -1773,7 +1746,6 @@ public:
             NOTHROW;
             GC_NOTRIGGER;
             MODE_ANY;
-            SO_TOLERANT;
         }
         CONTRACTL_END;
 
@@ -1794,7 +1766,6 @@ public:
             NOTHROW;
             GC_NOTRIGGER;
             MODE_ANY;
-            SO_TOLERANT;
         }
         CONTRACTL_END;
 
@@ -1819,7 +1790,6 @@ public:
             NOTHROW;
             GC_TRIGGERS;
             MODE_ANY;
-            SO_TOLERANT;
         }
         CONTRACTL_END;
 
@@ -1841,13 +1811,11 @@ private:
             NOTHROW;
             GC_TRIGGERS;
             MODE_ANY;
-            SO_TOLERANT;
         }
         CONTRACTL_END;
 
         if (!CanRunManagedCode())
             return;
-        SO_INTOLERANT_CODE_NOTHROW(GetThread(), return; );
 
         m_pWrap->Cleanup();
     }
@@ -1860,7 +1828,6 @@ public:
             NOTHROW;
             GC_TRIGGERS;
             MODE_ANY;
-            SO_TOLERANT;
         }
         CONTRACTL_END;
         
@@ -2087,8 +2054,6 @@ private:
     // Points to uncommonly used data that are dynamically allocated
     VolatilePtr<SimpleCCWAuxData>   m_pAuxData;         
 
-    ADID                            m_dwDomainId;
-
     DWORD                           m_flags;
 
     // This maintains both COM ref and Jupiter ref in 64-bit
@@ -2154,13 +2119,6 @@ inline ComCallWrapper* __stdcall ComCallWrapper::InlineGetWrapper(OBJECTREF* ppO
     RETURN pWrap;
 }
 
-inline ADID ComCallWrapper::GetDomainID()
-{
-    WRAPPER_NO_CONTRACT;
-    
-    return GetSimpleWrapper()->GetDomainID();
-}
-
 inline ULONG ComCallWrapper::GetRefCount()
 {
     CONTRACTL
@@ -2183,7 +2141,6 @@ inline ULONG ComCallWrapper::AddRef()
         WRAPPER(THROWS);
         WRAPPER(GC_TRIGGERS);
         MODE_ANY;
-        SO_TOLERANT;
         INSTANCE_CHECK;
     }
     CONTRACTL_END;
@@ -2204,7 +2161,6 @@ inline ULONG ComCallWrapper::Release()
         WRAPPER(THROWS);
         WRAPPER(GC_TRIGGERS);
         MODE_ANY;
-        SO_TOLERANT;
         INSTANCE_CHECK;
         PRECONDITION(CheckPointer(m_pSimpleWrapper));
     }
@@ -2331,7 +2287,6 @@ inline PTR_ComCallWrapper ComCallWrapper::GetWrapperFromIP(PTR_IUnknown pUnk)
         PRECONDITION(CheckPointer(pUnk));
         POSTCONDITION(CheckPointer(RETVAL));
         SUPPORTS_DAC;
-        SO_TOLERANT;
     }
     CONTRACT_END;
     

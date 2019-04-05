@@ -16,133 +16,8 @@
 #include "typeparse.h"
 #include "typestring.h"
 #include "assemblynative.hpp"
-#include "stackprobe.h"
 #include "fstring.h"
 
-//
-// TypeNameFactory
-//
-HRESULT STDMETHODCALLTYPE TypeNameFactory::QueryInterface(REFIID riid, void **ppUnk)
-{
-    WRAPPER_NO_CONTRACT;
-    
-    *ppUnk = 0;
-
-    if (riid == IID_IUnknown)
-        *ppUnk = (IUnknown *)this;
-    else if (riid == IID_ITypeNameFactory)
-        *ppUnk = (ITypeNameFactory*)this;
-    else
-        return (E_NOINTERFACE);
-
-    AddRef();
-    return S_OK;
-}
-
-HRESULT TypeNameFactoryCreateObject(REFIID riid, void **ppUnk)
-{ 
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-    }
-    CONTRACTL_END;
-
-    HRESULT hr = S_OK;
-
-    TypeNameFactory *pTypeNameFactory = new (nothrow) TypeNameFactory();
-    
-    if (!pTypeNameFactory)
-        return (E_OUTOFMEMORY);
-
-    hr = pTypeNameFactory->QueryInterface(riid, ppUnk);
-    
-    if (FAILED(hr))
-        delete pTypeNameFactory;
-
-    return hr;
-}
-
-
-HRESULT STDMETHODCALLTYPE TypeNameFactory::ParseTypeName(LPCWSTR szTypeName, DWORD* pError, ITypeName** ppTypeName)
-{
-    CONTRACTL
-    {
-        SO_TOLERANT;
-        WRAPPER(THROWS);
-    }CONTRACTL_END;
-
-    if (!ppTypeName || !pError)
-        return E_INVALIDARG;
-
-	HRESULT hr = S_OK;
-	BEGIN_SO_INTOLERANT_CODE_NO_THROW_CHECK_THREAD(return COR_E_STACKOVERFLOW);
-
-    *ppTypeName = NULL;
-    *pError = (DWORD)-1;
-
-    ITypeName* pTypeName = new (nothrow) TypeName(szTypeName, pError);
-
-    if (! pTypeName)
-    {
-        hr = E_OUTOFMEMORY;
-    }
-    else
-    {
-        pTypeName->AddRef();
-
-        if (*pError != (DWORD)-1)
-        {
-            pTypeName->Release();       
-            hr = S_FALSE;
-        }
-        else
-        {
-            *ppTypeName = pTypeName;
-        }
-    }
-
-	END_SO_INTOLERANT_CODE;
-
-    return hr;
-}
-
-HRESULT STDMETHODCALLTYPE TypeNameFactory::GetTypeNameBuilder(ITypeNameBuilder** ppTypeNameBuilder)
-{
-    CONTRACTL
-    {
-        THROWS; // operator new has EX_TRY/EX_CATCH or other contract transitions(s)
-        GC_NOTRIGGER;
-        MODE_ANY;
-    }
-    CONTRACTL_END;
-
-    if (!ppTypeNameBuilder)
-        return E_INVALIDARG;
-
-    *ppTypeNameBuilder = NULL;
-
-    HRESULT hr = S_OK;
-
-    BEGIN_SO_INTOLERANT_CODE_NO_THROW_CHECK_THREAD(return COR_E_STACKOVERFLOW);
-
-    ITypeNameBuilder* pTypeNameBuilder = new (nothrow) TypeNameBuilderWrapper();
-
-    if (pTypeNameBuilder)
-    {
-        pTypeNameBuilder->AddRef();
-
-        *ppTypeNameBuilder = pTypeNameBuilder;
-    }
-    else
-    {
-        hr = E_OUTOFMEMORY;
-    }
-
-    END_SO_INTOLERANT_CODE;
-
-    return hr;
-}
 
 //
 // TypeName
@@ -153,20 +28,16 @@ SString* TypeName::ToString(SString* pBuf, BOOL bAssemblySpec, BOOL bSignature, 
 
     PRECONDITION(!bGenericArguments & !bSignature &! bAssemblySpec);
 
-    BEGIN_SO_INTOLERANT_CODE_NO_THROW_CHECK_THREAD(return pBuf);
-    {
     TypeNameBuilder tnb(pBuf);
 
     for (COUNT_T i = 0; i < m_names.GetCount(); i ++)
         tnb.AddName(m_names[i]->GetUnicode());
-    }
-    END_SO_INTOLERANT_CODE;
 
     return pBuf;
 }
 
 
-DWORD STDMETHODCALLTYPE TypeName::AddRef()
+DWORD TypeName::AddRef()
 { 
     LIMITED_METHOD_CONTRACT; 
 
@@ -175,16 +46,14 @@ DWORD STDMETHODCALLTYPE TypeName::AddRef()
     return m_count; 
 }
 
-DWORD STDMETHODCALLTYPE TypeName::Release()
+DWORD TypeName::Release()
 { 
     CONTRACTL
     {
         THROWS;
         GC_TRIGGERS;
-        SO_TOLERANT;
     }
     CONTRACTL_END;
-    VALIDATE_BACKOUT_STACK_CONSUMPTION;
 
     m_count--; 
 
@@ -201,167 +70,11 @@ TypeName::~TypeName()
     {
         THROWS;
         GC_TRIGGERS;
-        SO_TOLERANT;
     }
     CONTRACTL_END;
-    VALIDATE_BACKOUT_STACK_CONSUMPTION;
  
     for(COUNT_T i = 0; i < m_genericArguments.GetCount(); i ++)
         m_genericArguments[i]->Release();
-}
-
-HRESULT STDMETHODCALLTYPE TypeName::QueryInterface(REFIID riid, void **ppUnk)
-{
-    WRAPPER_NO_CONTRACT;
-    
-    *ppUnk = 0;
-
-    if (riid == IID_IUnknown)
-        *ppUnk = (IUnknown *)this;
-    else if (riid == IID_ITypeName)
-        *ppUnk = (ITypeName*)this;
-    else
-        return (E_NOINTERFACE);
-
-    AddRef();
-    return S_OK;
-}
-
-HRESULT STDMETHODCALLTYPE TypeName::GetNameCount(DWORD* pCount)
-{
-    WRAPPER_NO_CONTRACT;
-
-    if (!pCount)
-        return E_INVALIDARG;
-
-    *pCount = m_names.GetCount();
-
-    return S_OK;
-}
-
-HRESULT STDMETHODCALLTYPE TypeName::GetNames(DWORD count, BSTR* bszName, DWORD* pFetched)
-{
-    CONTRACTL
-    {
-        SO_TOLERANT;
-        WRAPPER(THROWS);
-    }CONTRACTL_END;
-
-    HRESULT hr = S_OK;
-    
-    if (!pFetched)
-        return E_INVALIDARG;
-
-    *pFetched = m_names.GetCount();
-    
-    if (m_names.GetCount() > count)
-        return S_FALSE;
-
-    if (!bszName)
-        return E_INVALIDARG;
-
-    BEGIN_SO_INTOLERANT_CODE_NO_THROW_CHECK_THREAD(return COR_E_STACKOVERFLOW);
-    {
-    for (COUNT_T i = 0; i < m_names.GetCount(); i ++)
-        bszName[i] = SysAllocString(m_names[i]->GetUnicode());
-    }
-    END_SO_INTOLERANT_CODE;
-
-    return hr;
-}
-
-HRESULT STDMETHODCALLTYPE TypeName::GetTypeArgumentCount(DWORD* pCount)
-{
-    WRAPPER_NO_CONTRACT;
-
-    if (!pCount)
-        return E_INVALIDARG;
-
-    *pCount = m_genericArguments.GetCount();
-
-    return S_OK;
-}
-
-HRESULT STDMETHODCALLTYPE TypeName::GetTypeArguments(DWORD count, ITypeName** ppArguments, DWORD* pFetched)
-{
-    WRAPPER_NO_CONTRACT;
-
-    if (!pFetched)
-        return E_INVALIDARG;
-
-    *pFetched = m_genericArguments.GetCount();
-
-    if (m_genericArguments.GetCount() > count)
-        return S_FALSE;
-
-    if (!ppArguments)
-        return E_INVALIDARG;
-
-    for (COUNT_T i = 0; i < m_genericArguments.GetCount(); i ++)
-    {
-        ppArguments[i] = m_genericArguments[i];
-        m_genericArguments[i]->AddRef();
-    }
-
-    return S_OK;
-}
-
-HRESULT STDMETHODCALLTYPE TypeName::GetModifierLength(DWORD* pCount)
-{
-    WRAPPER_NO_CONTRACT;
-
-    if (pCount == NULL)
-        return E_INVALIDARG;
-
-    *pCount = m_signature.GetCount();
-
-    return S_OK;
-}
-
-HRESULT STDMETHODCALLTYPE TypeName::GetModifiers(DWORD count, DWORD* pModifiers, DWORD* pFetched)
-{
-    WRAPPER_NO_CONTRACT;
-
-    if (!pFetched)
-        return E_INVALIDARG;
-
-    *pFetched = m_signature.GetCount();
-
-    if (m_signature.GetCount() > count)
-        return S_FALSE;
-
-    if (!pModifiers)
-        return E_INVALIDARG;
-
-    for (COUNT_T i = 0; i < m_signature.GetCount(); i ++)
-        pModifiers[i] = m_signature[i];    
-
-    return S_OK;
-}
-
-HRESULT STDMETHODCALLTYPE TypeName::GetAssemblyName(BSTR* pszAssemblyName)
-{
-    CONTRACTL
-    {
-        SO_TOLERANT;
-        WRAPPER(THROWS);
-    }CONTRACTL_END;
-
-    HRESULT hr = S_OK;
-
-    if (pszAssemblyName == NULL)
-        return E_INVALIDARG;
-
-    BEGIN_SO_INTOLERANT_CODE_NO_THROW_CHECK_THREAD(return COR_E_STACKOVERFLOW);
-    {
-    *pszAssemblyName = SysAllocString(m_assembly.GetUnicode());
-    }
-    END_SO_INTOLERANT_CODE;
-
-    if (*pszAssemblyName == NULL)
-        hr= E_OUTOFMEMORY;
-
-    return hr;
 }
 
 #if!defined(CROSSGEN_COMPILE)
@@ -1141,7 +854,6 @@ TypeHandle TypeName::GetTypeUsingCASearchRules(LPCWSTR szTypeName, Assembly *pRe
         /*pAssemblyGetType =*/ NULL, 
         /*fEnableCASearchRules = */ TRUE, 
         /*fProhibitAsmQualifiedName = */ FALSE, 
-        NULL, 
         pRequestingAssembly, 
         nullptr,
         FALSE,
@@ -1181,7 +893,7 @@ TypeHandle TypeName::GetTypeUsingCASearchRules(LPCWSTR szTypeName, Assembly *pRe
     BOOL bThrowIfNotFound, 
     BOOL bIgnoreCase, 
     BOOL bProhibitAsmQualifiedName,
-    StackCrawlMark* pStackMark, 
+    Assembly* pRequestingAssembly, 
     BOOL bLoadTypeFromPartialNameHack,
     OBJECTREF *pKeepAlive,
     ICLRPrivBinder * pPrivHostBinder)
@@ -1225,16 +937,15 @@ TypeHandle TypeName::GetTypeUsingCASearchRules(LPCWSTR szTypeName, Assembly *pRe
     BOOL bPeriodPrefix = szTypeName[0] == W('.');
     
     TypeHandle result = pTypeName->GetTypeWorker(
-        bPeriodPrefix ? FALSE : bThrowIfNotFound, 
-        bIgnoreCase, 
-        pAssemblyGetType ? pAssemblyGetType->GetAssembly() : NULL, 
-        /*fEnableCASearchRules = */TRUE, 
-        bProhibitAsmQualifiedName, 
-        pStackMark, 
-        NULL, 
+        bPeriodPrefix ? FALSE : bThrowIfNotFound,
+        bIgnoreCase,
+        pAssemblyGetType ? pAssemblyGetType->GetAssembly() : NULL,
+        /*fEnableCASearchRules = */TRUE,
+        bProhibitAsmQualifiedName,
+        pRequestingAssembly,
         pPrivHostBinder,
         bLoadTypeFromPartialNameHack,
-        pKeepAlive);      
+        pKeepAlive);
 
     if (bPeriodPrefix && result.IsNull())
     {
@@ -1255,16 +966,15 @@ TypeHandle TypeName::GetTypeUsingCASearchRules(LPCWSTR szTypeName, Assembly *pRe
         }
         
         result = pTypeName->GetTypeWorker(
-            bThrowIfNotFound, 
-            bIgnoreCase, 
-            pAssemblyGetType ? pAssemblyGetType->GetAssembly() : NULL, 
-            /*fEnableCASearchRules = */TRUE, 
-            bProhibitAsmQualifiedName, 
-            pStackMark, 
-            NULL, 
+            bThrowIfNotFound,
+            bIgnoreCase,
+            pAssemblyGetType ? pAssemblyGetType->GetAssembly() : NULL,
+            /*fEnableCASearchRules = */TRUE,
+            bProhibitAsmQualifiedName,
+            pRequestingAssembly,
             pPrivHostBinder,
             bLoadTypeFromPartialNameHack,
-            pKeepAlive);      
+            pKeepAlive);
     }
 
     return result;
@@ -1320,7 +1030,7 @@ TypeHandle TypeName::GetTypeUsingCASearchRules(LPCWSTR szTypeName, Assembly *pRe
         COMPlusThrow(kArgumentException, IDS_EE_CANNOT_HAVE_ASSEMBLY_SPEC);
     }
 
-    return pTypeName->GetTypeWorker(bThrowIfNotFound, /*bIgnoreCase = */FALSE, pAssembly, /*fEnableCASearchRules = */FALSE, FALSE, NULL, NULL, 
+    return pTypeName->GetTypeWorker(bThrowIfNotFound, /*bIgnoreCase = */FALSE, pAssembly, /*fEnableCASearchRules = */FALSE, FALSE, NULL, 
         nullptr, // pPrivHostBinder
         FALSE, NULL /* cannot find a collectible type unless it is in assembly */);
 }
@@ -1387,7 +1097,6 @@ TypeHandle TypeName::GetTypeFromAsm()
         /*fEnableCASearchRules = */FALSE, 
         FALSE, 
         NULL, 
-        NULL, 
         nullptr, // pPrivHostBinder
         FALSE, 
         NULL /* cannot find a collectible type */);
@@ -1409,7 +1118,6 @@ TypeHandle TypeName::GetTypeFromAsm()
 
     BOOL fEnableCASearchRules,
     BOOL bProhibitAsmQualifiedName,
-    StackCrawlMark* pStackMark, 
     Assembly* pRequestingAssembly, 
     ICLRPrivBinder * pPrivHostBinder,
     BOOL bLoadTypeFromPartialNameHack,
@@ -1435,18 +1143,6 @@ TypeHandle TypeName::GetTypeFromAsm()
     if (pKeepAlive == NULL)
         pAsmRef = NULL;
 
-    //requires a lot of space
-    DECLARE_INTERIOR_STACK_PROBE;
-    // This function is recursive, so it must have an interior probe
-    if (bThrowIfNotFound)
-    {
-        DO_INTERIOR_STACK_PROBE_FOR_CHECK_THREAD(12);
-    }
-    else
-    {
-        DO_INTERIOR_STACK_PROBE_FOR_NOTHROW_CHECK_THREAD(12, goto Exit;);
-    }
-
     // An explicit assembly has been specified so look for the type there
     if (!GetAssembly()->IsEmpty()) 
     {
@@ -1463,9 +1159,6 @@ TypeHandle TypeName::GetTypeFromAsm()
                 goto Exit;
             }
         }
-
-        if (!pRequestingAssembly && pStackMark)
-            pRequestingAssembly = SystemDomain::GetCallersAssembly(pStackMark);
 
         SString * pssOuterTypeName = NULL;
         if (GetNames().GetCount() > 0)
@@ -1513,9 +1206,6 @@ TypeHandle TypeName::GetTypeFromAsm()
     // Otherwise look in the caller's assembly then the system assembly
     else if (fEnableCASearchRules)
     {
-        if (!pRequestingAssembly && pStackMark)
-            pRequestingAssembly = SystemDomain::GetCallersAssembly(pStackMark); 
-        
         // Look for type in caller's assembly
         if (pRequestingAssembly)
             th = GetTypeHaveAssembly(pRequestingAssembly, bThrowIfNotFound, bIgnoreCase, pKeepAlive);
@@ -1584,7 +1274,7 @@ TypeHandle TypeName::GetTypeFromAsm()
         {
             TypeHandle thGenericArg = m_genericArguments[i]->GetTypeWorker(
                 bThrowIfNotFound, bIgnoreCase,
-                pAssemblyGetType, fEnableCASearchRules, bProhibitAsmQualifiedName, pStackMark, pRequestingAssembly, 
+                pAssemblyGetType, fEnableCASearchRules, bProhibitAsmQualifiedName, pRequestingAssembly, 
                 pPrivHostBinder,
                 bLoadTypeFromPartialNameHack, 
                 (pKeepAlive != NULL) ? &gc.keepAlive : NULL /* Only pass a keepalive parameter if we were passed a keepalive parameter */);
@@ -1654,8 +1344,6 @@ TypeHandle TypeName::GetTypeFromAsm()
 
 Exit:
     ;
-    END_INTERIOR_STACK_PROBE;
-    
     GCPROTECT_END();
 
     RETURN th;

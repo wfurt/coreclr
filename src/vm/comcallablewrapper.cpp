@@ -35,7 +35,6 @@
 #include "eeconfig.h"
 #include "interoputil.h"
 #include "dispex.h"
-#include "perfcounters.h"
 #include "guidfromname.h"
 #include "comconnectionpoints.h"
 #include <objsafe.h>    // IID_IObjctSafe
@@ -707,8 +706,6 @@ WeakReferenceImpl::WeakReferenceImpl(SimpleComCallWrapper *pSimpleWrapper, Threa
     //
     AppDomain *pDomain = pCurrentThread->GetDomain();
 
-    m_adid = pDomain->GetId();
-
     {
         GCX_COOP_THREAD_EXISTS(pCurrentThread);
         m_ppObject = pDomain->CreateShortWeakHandle(pSimpleWrapper->GetObjectRef());
@@ -844,7 +841,6 @@ HRESULT WeakReferenceImpl::ResolveInternal(Thread *pThread, REFIID riid, IInspec
         GC_TRIGGERS;
         MODE_PREEMPTIVE;
         PRECONDITION(CheckPointer(ppvObject));
-        PRECONDITION(AppDomain::GetCurrentDomain()->GetId() == m_adid);
     }
     CONTRACTL_END;
 
@@ -1004,12 +1000,10 @@ LONGLONG SimpleComCallWrapper::ReleaseImplWithLogging(LONGLONG * pRefCount)
         NOTHROW;
         GC_NOTRIGGER;
         MODE_ANY;
-        SO_TOLERANT;
     }
     CONTRACTL_END;
 
     LONGLONG newRefCount;
-    BEGIN_SO_INTOLERANT_CODE_NOTHROW(GetThread(), goto NoLog );
 
     StackSString ssMessage;
     ComCallWrapper *pWrap = GetMainWrapper();
@@ -1020,14 +1014,7 @@ LONGLONG SimpleComCallWrapper::ReleaseImplWithLogging(LONGLONG * pRefCount)
 
     LogRefCount(pWrap, ssMessage, GET_EXT_COM_REF(newRefCount));
 
-    END_SO_INTOLERANT_CODE;
     return newRefCount;
-
-#ifdef FEATURE_STACK_PROBE  // this code is unreachable if FEATURE_STACK_PROBE is not defined
-NoLog:
-    // Decrement the ref count
-    return ::InterlockedDecrement64(pRefCount);
-#endif // FEATURE_STACK_PROBE
 }
 
 
@@ -1226,7 +1213,6 @@ void SimpleComCallWrapper::InitNew(OBJECTREF oref, ComCallWrapperCache *pWrapper
     m_pOuter = NULL;
 
     m_pSyncBlock = pSyncBlock;
-    m_dwDomainId = GetAppDomain()->GetId();
     
     if (pMT->IsComObjectType())
         m_flags |= enum_IsExtendsCom;
@@ -1743,7 +1729,6 @@ IUnknown* SimpleComCallWrapper::QIStandardInterface(Enum_StdInterfaces index)
         MODE_ANY;                                           \
         NOTHROW;                                            \
         GC_NOTRIGGER;                                       \
-        SO_TOLERANT;                                        \
         POSTCONDITION(RETVAL == !!IsEqualGUID(iid, riid));  \
     }                                                       \
     CONTRACT_END;                                           \
@@ -1899,7 +1884,6 @@ void SimpleComCallWrapper::ResetOuter()
         NOTHROW;
         GC_NOTRIGGER;
         MODE_ANY;
-        SO_TOLERANT;
     }
     CONTRACTL_END;
 
@@ -1921,7 +1905,6 @@ IUnknown* SimpleComCallWrapper::GetOuter()
         GC_NOTRIGGER;
         MODE_ANY;
         POSTCONDITION(CheckPointer(RETVAL, NULL_OK));
-        SO_TOLERANT;
     }
     CONTRACT_END;
 
@@ -2395,12 +2378,9 @@ void ComCallWrapper::Cleanup()
         }
     }
 
-    // get this info before the simple wrapper gets cleaned up.
-    ADID domainId=CURRENT_APPDOMAIN_ID;
     if (m_pSimpleWrapper)
     {
         m_pSimpleWrapper->Cleanup();
-        domainId=m_pSimpleWrapper->GetDomainID();
     }
 
     if (g_fEEStarted || m_pSimpleWrapper->GetOuter() == NULL) 
@@ -3251,7 +3231,7 @@ IUnknown * ComCallWrapper::GetComIPFromCCW_HandleExtendsCOMObject(
                 MethodDesc *pClsMD = NULL;
 
                 // Find the implementation for the first slot of the interface
-                DispatchSlot impl(pMT->FindDispatchSlot(intIt.GetInterface()->GetTypeID(), 0));
+                DispatchSlot impl(pMT->FindDispatchSlot(intIt.GetInterface()->GetTypeID(), 0, FALSE /* throwOnConflict */));
                 CONSISTENCY_CHECK(!impl.IsNull());
 
                 // Get the MethodDesc for this slot in the class
@@ -3789,8 +3769,6 @@ LONG ComCallWrapperCache::AddRef()
     }
     CONTRACTL_END;
     
-    COUNTER_ONLY(GetPerfCounters().m_Interop.cCCW++);
-    
     LONG i = FastInterlockIncrement(&m_cbRef);
     LOG((LF_INTEROP, LL_INFO100, "ComCallWrapperCache::Addref %8.8x with %d in loader allocator [%d] %8.8x\n", 
         this, i, GetLoaderAllocator()?GetLoaderAllocator()->GetCreationNumber() : 0, GetLoaderAllocator()));
@@ -3811,8 +3789,6 @@ LONG ComCallWrapperCache::Release()
         MODE_ANY;
     }
     CONTRACTL_END;
-    
-    COUNTER_ONLY(GetPerfCounters().m_Interop.cCCW--);
 
     LONG i = FastInterlockDecrement(&m_cbRef);
     _ASSERTE(i >= 0);
@@ -5322,7 +5298,16 @@ void ComCallWrapperTemplate::CheckParentComVisibility(BOOL fForIDispatch)
 
     // Throw an exception to report the error.
     if (!CheckParentComVisibilityNoThrow(fForIDispatch))
-        COMPlusThrow(kInvalidOperationException, IDS_EE_COM_INVISIBLE_PARENT);    
+    {
+        ComCallWrapperTemplate *invisParent = FindInvisibleParent();
+        _ASSERTE(invisParent != NULL);
+
+        SString thisType;
+        SString invisParentType;
+        TypeString::AppendType(thisType, m_thClass);
+        TypeString::AppendType(invisParentType, invisParent->m_thClass);
+        COMPlusThrow(kInvalidOperationException, IDS_EE_COM_INVISIBLE_PARENT, thisType.GetUnicode(), invisParentType.GetUnicode());
+    }
 }
 
 BOOL ComCallWrapperTemplate::CheckParentComVisibilityNoThrow(BOOL fForIDispatch)
@@ -6190,20 +6175,36 @@ void ComCallWrapperTemplate::DetermineComVisibility()
 
     m_flags &= (~enum_InvisibleParent);
 
-    // If there are no parents...leave it as false.
     if (m_pParent == NULL)
         return;
 
-    // If our parent has an invisible parent
-    if (m_pParent->HasInvisibleParent())
+    // Check if the parent has an invisible parent
+    // or if the parent itself is invisible.
+    if (m_pParent->HasInvisibleParent()
+        || !IsTypeVisibleFromCom(m_pParent->m_thClass))
     {
+        _ASSERTE(NULL != FindInvisibleParent());
         m_flags |= enum_InvisibleParent;
     }
-    // If our parent is invisible
-    else if (!IsTypeVisibleFromCom(m_pParent->m_thClass))
+}
+
+ComCallWrapperTemplate* ComCallWrapperTemplate::FindInvisibleParent()
+{
+    ComCallWrapperTemplate* invisParentMaybe = m_pParent;
+
+    // Walk up the CCW parent classes and try to find
+    // if one is invisible to COM.
+    while (invisParentMaybe != NULL)
     {
-        m_flags |= enum_InvisibleParent;
+        // If our parent is invisible, return it.
+        if (!IsTypeVisibleFromCom(invisParentMaybe->m_thClass))
+            return invisParentMaybe;
+
+        invisParentMaybe = invisParentMaybe->m_pParent;
     }
+
+    // All classes in hierarchy are COM visible
+    return NULL;
 }
 
 //--------------------------------------------------------------------------

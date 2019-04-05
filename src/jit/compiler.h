@@ -297,11 +297,212 @@ enum RefCountState
     RCS_NORMAL,  // normal ref counts (from lvaMarkRefs onward)
 };
 
+#ifdef USING_VARIABLE_LIVE_RANGE
+//--------------------------------------------
+//
+// VariableLiveKeeper: Holds an array of "VariableLiveDescriptor", one for each variable
+//  whose location we track. It provides start/end/update/count operations over the
+//  "LiveRangeList" of any variable.
+//
+// Notes:
+//  This method could be implemented on Compiler class too, but the intention is to move code
+//  out of that class, which is huge. With this solution the only code needed in Compiler is
+//  a getter and an initializer of this class.
+//  The index of each variable in this array corresponds to the one in "compiler->lvaTable".
+//  We care about tracking the variable locations of arguments, special arguments, and local IL
+//  variables, and we ignore any other variable (like JIT temporary variables).
+//
+class VariableLiveKeeper
+{
+public:
+    //--------------------------------------------
+    //
+    // VariableLiveRange: Represent part of the life of a variable. A
+    //      variable lives in a location (represented with struct "siVarLoc")
+    //      between two native offsets.
+    //
+    // Notes:
+    //    We use emitLocation and not NATTIVE_OFFSET because location
+    //    is captured when code is being generated (genCodeForBBList
+    //    and genGeneratePrologsAndEpilogs) but only after the whole
+    //    method's code is generated can we obtain a final, fixed
+    //    NATIVE_OFFSET representing the actual generated code offset.
+    //    There is also a IL_OFFSET, but this is more accurate and the
+    //    debugger is expecting assembly offsets.
+    //    This class doesn't have behaviour attached to itself, it is
+    //    just putting a name to a representation. It is used to build
+    //    typedefs LiveRangeList and LiveRangeListIterator, which are
+    //    basically a list of this class and a const_iterator of that
+    //    list.
+    //
+    class VariableLiveRange
+    {
+    public:
+        emitLocation               m_StartEmitLocation; // first position from where "m_VarLocation" becomes valid
+        emitLocation               m_EndEmitLocation;   // last position where "m_VarLocation" is valid
+        CodeGenInterface::siVarLoc m_VarLocation;       // variable location
+
+        VariableLiveRange(CodeGenInterface::siVarLoc varLocation,
+                          emitLocation               startEmitLocation,
+                          emitLocation               endEmitLocation)
+            : m_StartEmitLocation(startEmitLocation), m_EndEmitLocation(endEmitLocation), m_VarLocation(varLocation)
+        {
+        }
+
+#ifdef DEBUG
+        // Dump "VariableLiveRange" when code has not been generated. We don't have the native code offset,
+        // but we do have "emitLocation"s and "siVarLoc".
+        void dumpVariableLiveRange(const CodeGenInterface* codeGen) const;
+
+        // Dump "VariableLiveRange" when code has been generated and we have the native code offset of each
+        // "emitLocation"
+        void dumpVariableLiveRange(emitter* emit, const CodeGenInterface* codeGen) const;
+#endif // DEBUG
+    };
+
+    typedef jitstd::list<VariableLiveRange> LiveRangeList;
+    typedef LiveRangeList::const_iterator   LiveRangeListIterator;
+
+private:
+#ifdef DEBUG
+    //--------------------------------------------
+    //
+    // LiveRangeDumper: Used for debugging purposes during code
+    //  generation on genCodeForBBList. Keeps an iterator to the first
+    //  edited/added "VariableLiveRange" of a variable during the
+    //  generation of code of one block.
+    //
+    // Notes:
+    //  The first "VariableLiveRange" reported for a variable during
+    //  a BasicBlock is sent to "setDumperStartAt" so we can dump all
+    //  the "VariableLiveRange"s from that one.
+    //  After we dump all the "VariableLiveRange"s we call "reset" with
+    //  the "liveRangeList" to set the barrier to nullptr or the last
+    //  "VariableLiveRange" if it is opened.
+    //  If no "VariableLiveRange" was edited/added during block,
+    //  the iterator points to the end of variable's LiveRangeList.
+    //
+    class LiveRangeDumper
+    {
+        // Iterator to the first edited/added position during actual block code generation. If last
+        // block had a closed "VariableLiveRange" (with a valid "m_EndEmitLocation") and not changes
+        // were applied to variable liveness, it points to the end of variable's LiveRangeList.
+        LiveRangeListIterator m_StartingLiveRange;
+        bool                  m_hasLiveRangestoDump; // True if a live range for this variable has been
+                                                     // reported from last call to EndBlock
+
+    public:
+        LiveRangeDumper(const LiveRangeList* liveRanges)
+            : m_StartingLiveRange(liveRanges->end()), m_hasLiveRangestoDump(false){};
+
+        // Make the dumper point to the last "VariableLiveRange" opened or nullptr if all are closed
+        void resetDumper(const LiveRangeList* list);
+
+        // Make "LiveRangeDumper" instance points the last "VariableLiveRange" added so we can
+        // start dumping from there after the actual "BasicBlock"s code is generated.
+        void setDumperStartAt(const LiveRangeListIterator liveRangeIt);
+
+        // Return an iterator to the first "VariableLiveRange" edited/added during the current
+        // "BasicBlock"
+        LiveRangeListIterator getStartForDump() const;
+
+        // Return whether at least a "VariableLiveRange" was alive during the current "BasicBlock"'s
+        // code generation
+        bool hasLiveRangesToDump() const;
+    };
+#endif // DEBUG
+
+    //--------------------------------------------
+    //
+    // VariableLiveDescriptor: This class persist and update all the changes
+    //  to the home of a variable. It has an instance of "LiveRangeList"
+    //  and methods to report the start/end of a VariableLiveRange.
+    //
+    class VariableLiveDescriptor
+    {
+        LiveRangeList* m_VariableLiveRanges; // the variable locations of this variable
+        INDEBUG(LiveRangeDumper* m_VariableLifeBarrier);
+
+    public:
+        VariableLiveDescriptor(CompAllocator allocator);
+
+        bool           hasVariableLiveRangeOpen() const;
+        LiveRangeList* getLiveRanges() const;
+
+        void startLiveRangeFromEmitter(CodeGenInterface::siVarLoc varLocation, emitter* emit) const;
+        void endLiveRangeAtEmitter(emitter* emit) const;
+        void updateLiveRangeAtEmitter(CodeGenInterface::siVarLoc varLocation, emitter* emit) const;
+
+#ifdef DEBUG
+        void dumpAllRegisterLiveRangesForBlock(emitter* emit, const CodeGenInterface* codeGen) const;
+        void dumpRegisterLiveRangesForBlockBeforeCodeGenerated(const CodeGenInterface* codeGen) const;
+        bool hasVarLiveRangesToDump() const;
+        bool hasVarLiverRangesFromLastBlockToDump() const;
+        void endBlockLiveRanges();
+#endif // DEBUG
+    };
+
+    unsigned int m_LiveDscCount;  // count of args, special args, and IL local variables to report home
+    unsigned int m_LiveArgsCount; // count of arguments to report home
+
+    Compiler* m_Compiler;
+
+    VariableLiveDescriptor* m_vlrLiveDsc; // Array of descriptors that manage VariableLiveRanges.
+                                          // Its indices correspond to lvaTable indexes (or lvSlotNum).
+
+    bool m_LastBasicBlockHasBeenEmited; // When true no more siEndVariableLiveRange is considered.
+                                        // No update/start happens when code has been generated.
+
+public:
+    VariableLiveKeeper(unsigned int  totalLocalCount,
+                       unsigned int  argsCount,
+                       Compiler*     compiler,
+                       CompAllocator allocator);
+
+    // For tracking locations during code generation
+    void siStartOrCloseVariableLiveRange(const LclVarDsc* varDsc, unsigned int varNum, bool isBorn, bool isDying);
+    void siStartOrCloseVariableLiveRanges(VARSET_VALARG_TP varsIndexSet, bool isBorn, bool isDying);
+    void siStartVariableLiveRange(const LclVarDsc* varDsc, unsigned int varNum);
+    void siEndVariableLiveRange(unsigned int varNum);
+    void siUpdateVariableLiveRange(const LclVarDsc* varDsc, unsigned int varNum);
+    void siEndAllVariableLiveRange(VARSET_VALARG_TP varsToClose);
+    void siEndAllVariableLiveRange();
+
+    LiveRangeList* getLiveRangesForVar(unsigned int varNum) const;
+    size_t getLiveRangesCount() const;
+
+    // For parameters locations on prolog
+    void psiStartVariableLiveRange(CodeGenInterface::siVarLoc varLocation, unsigned int varNum);
+    void psiClosePrologVariableRanges();
+
+#ifdef DEBUG
+    void dumpBlockVariableLiveRanges(const BasicBlock* block);
+    void dumpLvaVariableLiveRanges() const;
+#endif // DEBUG
+};
+#endif // USING_VARIABLE_LIVE_RANGE
+
 class LclVarDsc
 {
 public:
     // The constructor. Most things can just be zero'ed.
-    LclVarDsc();
+    //
+    // Initialize the ArgRegs to REG_STK.
+    // Morph will update if this local is passed in a register.
+    LclVarDsc()
+        : _lvArgReg(REG_STK)
+        ,
+#if FEATURE_MULTIREG_ARGS
+        _lvOtherArgReg(REG_STK)
+        ,
+#endif // FEATURE_MULTIREG_ARGS
+#if ASSERTION_PROP
+        lvRefBlks(BlockSetOps::UninitVal())
+        ,
+#endif // ASSERTION_PROP
+        lvPerSsaData()
+    {
+    }
 
     // note this only packs because var_types is a typedef of unsigned char
     var_types lvType : 5; // TYP_INT/LONG/FLOAT/DOUBLE/REF
@@ -794,9 +995,9 @@ public:
     BYTE* lvGcLayout; // GC layout info for structs
 
 #if ASSERTION_PROP
-    BlockSet lvRefBlks;          // Set of blocks that contain refs
-    GenTree* lvDefStmt;          // Pointer to the statement with the single definition
-    void     lvaDisqualifyVar(); // Call to disqualify a local variable from use in optAddCopies
+    BlockSet     lvRefBlks;          // Set of blocks that contain refs
+    GenTreeStmt* lvDefStmt;          // Pointer to the statement with the single definition
+    void         lvaDisqualifyVar(); // Call to disqualify a local variable from use in optAddCopies
 #endif
     var_types TypeGet() const
     {
@@ -1616,6 +1817,7 @@ class fgArgInfo
     bool            hasStackArgs; // true if we have one or more stack arguments
     bool            argsComplete; // marker for state
     bool            argsSorted;   // marker for state
+    bool            needsTemps;   // one or more arguments must be copied to a temp by EvalArgsToTemps
     fgArgTabEntry** argTable;     // variable sized array of per argument descrption: (i.e. argTable[argTableSize])
 
 private:
@@ -1684,6 +1886,10 @@ public:
     bool HasRegArgs()
     {
         return hasRegArgs;
+    }
+    bool NeedsTemps()
+    {
+        return needsTemps;
     }
     bool HasStackArgs()
     {
@@ -1874,6 +2080,14 @@ class Compiler
     */
 
 public:
+#ifdef USING_VARIABLE_LIVE_RANGE
+    VariableLiveKeeper* varLiveKeeper; // Used to manage VariableLiveRanges of variables
+
+    void initializeVariableLiveKeeper();
+
+    VariableLiveKeeper* getVariableLiveKeeper() const;
+#endif // USING_VARIABLE_LIVE_RANGE
+
     hashBvGlobalData hbvGlobalData; // Used by the hashBv bitvector package.
 
 #ifdef DEBUG
@@ -1979,50 +2193,50 @@ public:
         pEHNodeDsc ehnFilterNode; // if this is a try node and has a filter, otherwise 0
         pEHNodeDsc ehnEquivalent; // if blockType=tryNode, start offset and end offset is same,
 
-        inline void ehnSetTryNodeType()
+        void ehnSetTryNodeType()
         {
             ehnBlockType = TryNode;
         }
-        inline void ehnSetFilterNodeType()
+        void ehnSetFilterNodeType()
         {
             ehnBlockType = FilterNode;
         }
-        inline void ehnSetHandlerNodeType()
+        void ehnSetHandlerNodeType()
         {
             ehnBlockType = HandlerNode;
         }
-        inline void ehnSetFinallyNodeType()
+        void ehnSetFinallyNodeType()
         {
             ehnBlockType = FinallyNode;
         }
-        inline void ehnSetFaultNodeType()
+        void ehnSetFaultNodeType()
         {
             ehnBlockType = FaultNode;
         }
 
-        inline BOOL ehnIsTryBlock()
+        BOOL ehnIsTryBlock()
         {
             return ehnBlockType == TryNode;
         }
-        inline BOOL ehnIsFilterBlock()
+        BOOL ehnIsFilterBlock()
         {
             return ehnBlockType == FilterNode;
         }
-        inline BOOL ehnIsHandlerBlock()
+        BOOL ehnIsHandlerBlock()
         {
             return ehnBlockType == HandlerNode;
         }
-        inline BOOL ehnIsFinallyBlock()
+        BOOL ehnIsFinallyBlock()
         {
             return ehnBlockType == FinallyNode;
         }
-        inline BOOL ehnIsFaultBlock()
+        BOOL ehnIsFaultBlock()
         {
             return ehnBlockType == FaultNode;
         }
 
         // returns true if there is any overlap between the two nodes
-        static inline BOOL ehnIsOverlap(pEHNodeDsc node1, pEHNodeDsc node2)
+        static BOOL ehnIsOverlap(pEHNodeDsc node1, pEHNodeDsc node2)
         {
             if (node1->ehnStartOffset < node2->ehnStartOffset)
             {
@@ -2035,7 +2249,7 @@ public:
         }
 
         // fails with BADCODE if inner is not completely nested inside outer
-        static inline BOOL ehnIsNested(pEHNodeDsc inner, pEHNodeDsc outer)
+        static BOOL ehnIsNested(pEHNodeDsc inner, pEHNodeDsc outer)
         {
             return ((inner->ehnStartOffset >= outer->ehnStartOffset) && (inner->ehnEndOffset <= outer->ehnEndOffset));
         }
@@ -2324,7 +2538,7 @@ public:
 
     GenTree* gtNewLconNode(__int64 value);
 
-    GenTree* gtNewDconNode(double value);
+    GenTree* gtNewDconNode(double value, var_types type = TYP_DOUBLE);
 
     GenTree* gtNewSconNode(int CPX, CORINFO_MODULE_HANDLE scpHandle);
 
@@ -2369,7 +2583,8 @@ public:
 
     GenTreeCall* gtNewHelperCallNode(unsigned helper, var_types type, GenTreeArgList* args = nullptr);
 
-    GenTree* gtNewLclvNode(unsigned lnum, var_types type, IL_OFFSETX ILoffs = BAD_IL_OFFSET);
+    GenTree* gtNewLclvNode(unsigned lnum, var_types type DEBUGARG(IL_OFFSETX ILoffs = BAD_IL_OFFSET));
+    GenTree* gtNewLclLNode(unsigned lnum, var_types type DEBUGARG(IL_OFFSETX ILoffs = BAD_IL_OFFSET));
 
 #ifdef FEATURE_SIMD
     GenTreeSIMD* gtNewSIMDNode(
@@ -2414,11 +2629,8 @@ public:
     CORINFO_CLASS_HANDLE gtGetStructHandleForHWSIMD(var_types simdType, var_types simdBaseType);
 #endif // FEATURE_HW_INTRINSICS
 
-    GenTree* gtNewLclLNode(unsigned lnum, var_types type, IL_OFFSETX ILoffs = BAD_IL_OFFSET);
     GenTreeLclFld* gtNewLclFldNode(unsigned lnum, var_types type, unsigned offset);
     GenTree* gtNewInlineCandidateReturnExpr(GenTree* inlineCandidate, var_types type);
-
-    GenTree* gtNewCodeRef(BasicBlock* block);
 
     GenTree* gtNewFieldRef(var_types typ, CORINFO_FIELD_HANDLE fldHnd, GenTree* obj = nullptr, DWORD offset = 0);
 
@@ -2441,11 +2653,11 @@ public:
 
     GenTree* gtNewAssignNode(GenTree* dst, GenTree* src);
 
-    GenTree* gtNewTempAssign(unsigned    tmp,
-                             GenTree*    val,
-                             GenTree**   pAfterStmt = nullptr,
-                             IL_OFFSETX  ilOffset   = BAD_IL_OFFSET,
-                             BasicBlock* block      = nullptr);
+    GenTree* gtNewTempAssign(unsigned      tmp,
+                             GenTree*      val,
+                             GenTreeStmt** pAfterStmt = nullptr,
+                             IL_OFFSETX    ilOffset   = BAD_IL_OFFSET,
+                             BasicBlock*   block      = nullptr);
 
     GenTree* gtNewRefCOMfield(GenTree*                objPtr,
                               CORINFO_RESOLVED_TOKEN* pResolvedToken,
@@ -2465,7 +2677,8 @@ public:
 
     GenTreeCast* gtNewCastNodeL(var_types typ, GenTree* op1, bool fromUnsigned, var_types castType);
 
-    GenTreeAllocObj* gtNewAllocObjNode(unsigned int helper, CORINFO_CLASS_HANDLE clsHnd, var_types type, GenTree* op1);
+    GenTreeAllocObj* gtNewAllocObjNode(
+        unsigned int helper, bool helperHasSideEffects, CORINFO_CLASS_HANDLE clsHnd, var_types type, GenTree* op1);
 
     GenTreeAllocObj* gtNewAllocObjNode(CORINFO_RESOLVED_TOKEN* pResolvedToken, BOOL useParent);
 
@@ -2498,13 +2711,13 @@ public:
     // Create copy of an inline or guarded devirtualization candidate tree.
     GenTreeCall* gtCloneCandidateCall(GenTreeCall* call);
 
-    GenTree* gtReplaceTree(GenTree* stmt, GenTree* tree, GenTree* replacementTree);
+    GenTree* gtReplaceTree(GenTreeStmt* stmt, GenTree* tree, GenTree* replacementTree);
 
-    void gtUpdateSideEffects(GenTree* stmt, GenTree* tree);
+    void gtUpdateSideEffects(GenTreeStmt* stmt, GenTree* tree);
 
     void gtUpdateTreeAncestorsSideEffects(GenTree* tree);
 
-    void gtUpdateStmtSideEffects(GenTree* stmt);
+    void gtUpdateStmtSideEffects(GenTreeStmt* stmt);
 
     void gtUpdateNodeSideEffects(GenTree* tree);
 
@@ -2540,9 +2753,15 @@ public:
     // Returns true iff the secondNode can be swapped with firstNode.
     bool gtCanSwapOrder(GenTree* firstNode, GenTree* secondNode);
 
+    // Given an address expression, compute its costs and addressing mode opportunities,
+    // and mark addressing mode candidates as GTF_DONT_CSE.
+    // TODO-Throughput - Consider actually instantiating these early, to avoid
+    // having to re-run the algorithm that looks for them (might also improve CQ).
+    bool gtMarkAddrMode(GenTree* addr, int* costEx, int* costSz, var_types type);
+
     unsigned gtSetEvalOrder(GenTree* tree);
 
-    void gtSetStmtInfo(GenTree* stmt);
+    void gtSetStmtInfo(GenTreeStmt* stmt);
 
     // Returns "true" iff "node" has any of the side effects in "flags".
     bool gtNodeHasSideEffects(GenTree* node, unsigned flags);
@@ -2706,7 +2925,7 @@ public:
     static fgWalkPreFn gtMarkColonCond;
     static fgWalkPreFn gtClearColonCond;
 
-    GenTree** gtFindLink(GenTree* stmt, GenTree* node);
+    GenTree** gtFindLink(GenTreeStmt* stmt, GenTree* node);
     bool gtHasCatchArg(GenTree* tree);
 
     typedef ArrayStack<GenTree*> GenTreeStack;
@@ -2968,7 +3187,7 @@ public:
     unsigned lvaFrameSize(FrameLayoutState curState);
 
     // Returns the caller-SP-relative offset for the SP/FP relative offset determined by FP based.
-    int lvaToCallerSPRelativeOffset(int offs, bool isFpBased);
+    int lvaToCallerSPRelativeOffset(int offs, bool isFpBased) const;
 
     // Returns the caller-SP-relative offset for the local variable "varNum."
     int lvaGetCallerSPRelativeOffset(unsigned varNum);
@@ -3037,7 +3256,7 @@ public:
 
     void lvaAllocOutgoingArgSpaceVar(); // Set up lvaOutgoingArgSpaceVar
 
-    VARSET_VALRET_TP lvaStmtLclMask(GenTree* stmt);
+    VARSET_VALRET_TP lvaStmtLclMask(GenTreeStmt* stmt);
 
 #ifdef DEBUG
     struct lvaStressLclFldArgs
@@ -3303,7 +3522,7 @@ public:
     CORINFO_CLASS_HANDLE impGetObjectClass();
 
     // Returns underlying type of handles returned by ldtoken instruction
-    inline var_types GetRuntimeHandleUnderlyingType()
+    var_types GetRuntimeHandleUnderlyingType()
     {
         // RuntimeTypeHandle is backed by raw pointer on CoreRT and by object reference on other runtimes
         return IsTargetAbi(CORINFO_CORERT_ABI) ? TYP_I_IMPL : TYP_REF;
@@ -3314,7 +3533,8 @@ public:
                              unsigned*               methodFlags,
                              CORINFO_CONTEXT_HANDLE* contextHandle,
                              CORINFO_CONTEXT_HANDLE* exactContextHandle,
-                             bool                    isLateDevirtualization);
+                             bool                    isLateDevirtualization,
+                             bool                    isExplicitTailCall);
 
     //=========================================================================
     //                          PROTECTED
@@ -3349,6 +3569,7 @@ protected:
 
     GenTree* impImportLdvirtftn(GenTree* thisPtr, CORINFO_RESOLVED_TOKEN* pResolvedToken, CORINFO_CALL_INFO* pCallInfo);
 
+    int impBoxPatternMatch(CORINFO_RESOLVED_TOKEN* pResolvedToken, const BYTE* codeAddr, const BYTE* codeEndp);
     void impImportAndPushBox(CORINFO_RESOLVED_TOKEN* pResolvedToken);
 
     void impImportNewObjArray(CORINFO_RESOLVED_TOKEN* pResolvedToken, CORINFO_CALL_INFO* pCallInfo);
@@ -3422,10 +3643,6 @@ protected:
     NamedIntrinsic lookupNamedIntrinsic(CORINFO_METHOD_HANDLE method);
 
 #ifdef FEATURE_HW_INTRINSICS
-    GenTree* impBaseIntrinsic(NamedIntrinsic        intrinsic,
-                              CORINFO_CLASS_HANDLE  clsHnd,
-                              CORINFO_METHOD_HANDLE method,
-                              CORINFO_SIG_INFO*     sig);
     GenTree* impHWIntrinsic(NamedIntrinsic        intrinsic,
                             CORINFO_METHOD_HANDLE method,
                             CORINFO_SIG_INFO*     sig,
@@ -3439,6 +3656,10 @@ protected:
     bool compSupportsHWIntrinsic(InstructionSet isa);
 
 #ifdef _TARGET_XARCH_
+    GenTree* impBaseIntrinsic(NamedIntrinsic        intrinsic,
+                              CORINFO_METHOD_HANDLE method,
+                              CORINFO_SIG_INFO*     sig,
+                              bool                  mustExpand);
     GenTree* impSSEIntrinsic(NamedIntrinsic        intrinsic,
                              CORINFO_METHOD_HANDLE method,
                              CORINFO_SIG_INFO*     sig,
@@ -3459,14 +3680,10 @@ protected:
                              CORINFO_METHOD_HANDLE method,
                              CORINFO_SIG_INFO*     sig,
                              bool                  mustExpand);
-    GenTree* impBMI1Intrinsic(NamedIntrinsic        intrinsic,
-                              CORINFO_METHOD_HANDLE method,
-                              CORINFO_SIG_INFO*     sig,
-                              bool                  mustExpand);
-    GenTree* impBMI2Intrinsic(NamedIntrinsic        intrinsic,
-                              CORINFO_METHOD_HANDLE method,
-                              CORINFO_SIG_INFO*     sig,
-                              bool                  mustExpand);
+    GenTree* impBMI1OrBMI2Intrinsic(NamedIntrinsic        intrinsic,
+                                    CORINFO_METHOD_HANDLE method,
+                                    CORINFO_SIG_INFO*     sig,
+                                    bool                  mustExpand);
     GenTree* impFMAIntrinsic(NamedIntrinsic        intrinsic,
                              CORINFO_METHOD_HANDLE method,
                              CORINFO_SIG_INFO*     sig,
@@ -3492,7 +3709,7 @@ protected:
 #ifdef _TARGET_ARM64_
     InstructionSet lookupHWIntrinsicISA(const char* className);
     NamedIntrinsic lookupHWIntrinsic(const char* className, const char* methodName);
-    bool impCheckImmediate(GenTree* immediateOp, unsigned int max);
+    GenTree* addRangeCheckIfNeeded(GenTree* lastOp, unsigned int max, bool mustExpand);
 #endif // _TARGET_ARM64_
 #endif // FEATURE_HW_INTRINSICS
     GenTree* impArrayAccessIntrinsic(CORINFO_CLASS_HANDLE clsHnd,
@@ -3510,8 +3727,8 @@ protected:
 
     //----------------- Manipulating the trees and stmts ----------------------
 
-    GenTree* impTreeList; // Trees for the BB being imported
-    GenTree* impTreeLast; // The last tree for the current BB
+    GenTreeStmt* impStmtList; // Statements for the BB being imported.
+    GenTreeStmt* impLastStmt; // The last statement for the current BB.
 
 public:
     enum
@@ -3521,43 +3738,46 @@ public:
     };
 
     void impBeginTreeList();
-    void impEndTreeList(BasicBlock* block, GenTree* firstStmt, GenTree* lastStmt);
+    void impEndTreeList(BasicBlock* block, GenTreeStmt* firstStmt, GenTreeStmt* lastStmt);
     void impEndTreeList(BasicBlock* block);
-    void impAppendStmtCheck(GenTree* stmt, unsigned chkLevel);
-    void impAppendStmt(GenTree* stmt, unsigned chkLevel);
-    void impInsertStmtBefore(GenTree* stmt, GenTree* stmtBefore);
-    GenTree* impAppendTree(GenTree* tree, unsigned chkLevel, IL_OFFSETX offset);
-    void impInsertTreeBefore(GenTree* tree, IL_OFFSETX offset, GenTree* stmtBefore);
-    void impAssignTempGen(unsigned    tmp,
-                          GenTree*    val,
-                          unsigned    curLevel,
-                          GenTree**   pAfterStmt = nullptr,
-                          IL_OFFSETX  ilOffset   = BAD_IL_OFFSET,
-                          BasicBlock* block      = nullptr);
+    void impAppendStmtCheck(GenTreeStmt* stmt, unsigned chkLevel);
+    void impAppendStmt(GenTreeStmt* stmt, unsigned chkLevel);
+    void impAppendStmt(GenTreeStmt* stmt);
+    void impInsertStmtBefore(GenTreeStmt* stmt, GenTreeStmt* stmtBefore);
+    GenTreeStmt* impAppendTree(GenTree* tree, unsigned chkLevel, IL_OFFSETX offset);
+    void impInsertTreeBefore(GenTree* tree, IL_OFFSETX offset, GenTreeStmt* stmtBefore);
+    void impAssignTempGen(unsigned      tmp,
+                          GenTree*      val,
+                          unsigned      curLevel,
+                          GenTreeStmt** pAfterStmt = nullptr,
+                          IL_OFFSETX    ilOffset   = BAD_IL_OFFSET,
+                          BasicBlock*   block      = nullptr);
     void impAssignTempGen(unsigned             tmpNum,
                           GenTree*             val,
                           CORINFO_CLASS_HANDLE structHnd,
                           unsigned             curLevel,
-                          GenTree**            pAfterStmt = nullptr,
+                          GenTreeStmt**        pAfterStmt = nullptr,
                           IL_OFFSETX           ilOffset   = BAD_IL_OFFSET,
                           BasicBlock*          block      = nullptr);
+
+    GenTreeStmt* impExtractLastStmt();
     GenTree* impCloneExpr(GenTree*             tree,
                           GenTree**            clone,
                           CORINFO_CLASS_HANDLE structHnd,
                           unsigned             curLevel,
-                          GenTree** pAfterStmt DEBUGARG(const char* reason));
+                          GenTreeStmt** pAfterStmt DEBUGARG(const char* reason));
     GenTree* impAssignStruct(GenTree*             dest,
                              GenTree*             src,
                              CORINFO_CLASS_HANDLE structHnd,
                              unsigned             curLevel,
-                             GenTree**            pAfterStmt = nullptr,
+                             GenTreeStmt**        pAfterStmt = nullptr,
                              IL_OFFSETX           ilOffset   = BAD_IL_OFFSET,
                              BasicBlock*          block      = nullptr);
     GenTree* impAssignStructPtr(GenTree*             dest,
                                 GenTree*             src,
                                 CORINFO_CLASS_HANDLE structHnd,
                                 unsigned             curLevel,
-                                GenTree**            pAfterStmt = nullptr,
+                                GenTreeStmt**        pAfterStmt = nullptr,
                                 IL_OFFSETX           ilOffset   = BAD_IL_OFFSET,
                                 BasicBlock*          block      = nullptr);
 
@@ -3630,8 +3850,8 @@ private:
     bool        impNestedStackSpill;
 
     // For displaying instrs with generated native code (-n:B)
-    GenTree* impLastILoffsStmt; // oldest stmt added for which we did not gtStmtLastILoffs
-    void     impNoteLastILoffs();
+    GenTreeStmt* impLastILoffsStmt; // oldest stmt added for which we did not gtStmtLastILoffs
+    void         impNoteLastILoffs();
 #endif
 
     /* IL offset of the stmt currently being imported. It gets set to
@@ -4224,7 +4444,7 @@ public:
 
     BasicBlock* fgSplitBlockAtBeginning(BasicBlock* curr);
     BasicBlock* fgSplitBlockAtEnd(BasicBlock* curr);
-    BasicBlock* fgSplitBlockAfterStatement(BasicBlock* curr, GenTree* stmt);
+    BasicBlock* fgSplitBlockAfterStatement(BasicBlock* curr, GenTreeStmt* stmt);
     BasicBlock* fgSplitBlockAfterNode(BasicBlock* curr, GenTree* node); // for LIR
     BasicBlock* fgSplitEdge(BasicBlock* curr, BasicBlock* succ);
 
@@ -4234,8 +4454,8 @@ public:
     GenTreeStmt* fgNewStmtFromTree(GenTree* tree, IL_OFFSETX offs);
 
     GenTree* fgGetTopLevelQmark(GenTree* expr, GenTree** ppDst = nullptr);
-    void fgExpandQmarkForCastInstOf(BasicBlock* block, GenTree* stmt);
-    void fgExpandQmarkStmt(BasicBlock* block, GenTree* expr);
+    void fgExpandQmarkForCastInstOf(BasicBlock* block, GenTreeStmt* stmt);
+    void fgExpandQmarkStmt(BasicBlock* block, GenTreeStmt* stmt);
     void fgExpandQmarkNodes();
 
     void fgMorph();
@@ -4250,7 +4470,7 @@ public:
 
     GenTreeCall* fgGetSharedCCtor(CORINFO_CLASS_HANDLE cls);
 
-    inline bool backendRequiresLocalVarLifetimes()
+    bool backendRequiresLocalVarLifetimes()
     {
         return !opts.MinOpts() || m_pLinearScan->willEnregisterLocalVars();
     }
@@ -4507,6 +4727,7 @@ public:
         }
         else
         {
+            assert(elemTyp != TYP_STRUCT);
             elemTyp = varTypeUnsignedToSigned(elemTyp);
             return CORINFO_CLASS_HANDLE(size_t(elemTyp) << 1 | 0x1);
         }
@@ -4789,9 +5010,9 @@ public:
 
     void fgRemoveEmptyBlocks();
 
-    void fgRemoveStmt(BasicBlock* block, GenTree* stmt);
+    void fgRemoveStmt(BasicBlock* block, GenTreeStmt* stmt);
 
-    bool fgCheckRemoveStmt(BasicBlock* block, GenTree* stmt);
+    bool fgCheckRemoveStmt(BasicBlock* block, GenTreeStmt* stmt);
 
     void fgCreateLoopPreHeader(unsigned lnum);
 
@@ -4917,7 +5138,7 @@ public:
     void fgTableDispBasicBlock(BasicBlock* block, int ibcColWidth = 0);
     void fgDispBasicBlocks(BasicBlock* firstBlock, BasicBlock* lastBlock, bool dumpTrees);
     void fgDispBasicBlocks(bool dumpTrees = false);
-    void fgDumpStmtTree(GenTree* stmt, unsigned bbNum);
+    void fgDumpStmtTree(GenTreeStmt* stmt, unsigned bbNum);
     void fgDumpBlock(BasicBlock* block);
     void fgDumpTrees(BasicBlock* firstBlock, BasicBlock* lastBlock);
 
@@ -4928,7 +5149,7 @@ public:
     void fgDebugCheckBlockLinks();
     void fgDebugCheckLinks(bool morphTrees = false);
     void fgDebugCheckStmtsList(BasicBlock* block, bool morphTrees);
-    void fgDebugCheckNodeLinks(BasicBlock* block, GenTree* stmt);
+    void fgDebugCheckNodeLinks(BasicBlock* block, GenTreeStmt* stmt);
     void fgDebugCheckNodesUniqueness();
 
     void fgDebugCheckFlags(GenTree* tree);
@@ -5064,7 +5285,9 @@ public:
 
 #ifdef DEBUG
 public:
-    static bool fgBlockContainsStatementBounded(BasicBlock* block, GenTree* stmt, bool answerOnBoundExceeded = true);
+    static bool fgBlockContainsStatementBounded(BasicBlock*  block,
+                                                GenTreeStmt* stmt,
+                                                bool         answerOnBoundExceeded = true);
 #endif
 
 public:
@@ -5074,14 +5297,14 @@ public: // Used by linear scan register allocation
     GenTreeStmt* fgInsertStmtNearEnd(BasicBlock* block, GenTree* node);
 
 private:
-    GenTree* fgInsertStmtAtBeg(BasicBlock* block, GenTree* stmt);
-    GenTree* fgInsertStmtAfter(BasicBlock* block, GenTree* insertionPoint, GenTree* stmt);
+    GenTreeStmt* fgInsertStmtAtBeg(BasicBlock* block, GenTree* node);
+    GenTreeStmt* fgInsertStmtAfter(BasicBlock* block, GenTreeStmt* insertionPoint, GenTreeStmt* stmt);
 
 public: // Used by linear scan register allocation
-    GenTree* fgInsertStmtBefore(BasicBlock* block, GenTree* insertionPoint, GenTree* stmt);
+    GenTreeStmt* fgInsertStmtBefore(BasicBlock* block, GenTreeStmt* insertionPoint, GenTreeStmt* stmt);
 
 private:
-    GenTree* fgInsertStmtListAfter(BasicBlock* block, GenTree* stmtAfter, GenTree* stmtList);
+    GenTreeStmt* fgInsertStmtListAfter(BasicBlock* block, GenTreeStmt* stmtAfter, GenTreeStmt* stmtList);
 
     //                  Create a new temporary variable to hold the result of *ppTree,
     //                  and transform the graph accordingly.
@@ -5102,7 +5325,7 @@ private:
     GenTree* fgSetTreeSeq(GenTree* tree, GenTree* prev = nullptr, bool isLIR = false);
     void fgSetTreeSeqHelper(GenTree* tree, bool isLIR);
     void fgSetTreeSeqFinish(GenTree* tree, bool isLIR);
-    void fgSetStmtSeq(GenTree* tree);
+    void fgSetStmtSeq(GenTreeStmt* stmt);
     void fgSetBlockOrder(BasicBlock* block);
 
     //------------------------- Morphing --------------------------------------
@@ -5194,12 +5417,12 @@ private:
                                     bool       ignoreUsedInSIMDIntrinsic = false);
     GenTree* fgMorphFieldAssignToSIMDIntrinsicSet(GenTree* tree);
     GenTree* fgMorphFieldToSIMDIntrinsicGet(GenTree* tree);
-    bool fgMorphCombineSIMDFieldAssignments(BasicBlock* block, GenTree* stmt);
-    void impMarkContiguousSIMDFieldAssignments(GenTree* stmt);
+    bool fgMorphCombineSIMDFieldAssignments(BasicBlock* block, GenTreeStmt* stmt);
+    void impMarkContiguousSIMDFieldAssignments(GenTreeStmt* stmt);
 
     // fgPreviousCandidateSIMDFieldAsgStmt is only used for tracking previous simd field assignment
     // in function: Complier::impMarkContiguousSIMDFieldAssignments.
-    GenTree* fgPreviousCandidateSIMDFieldAsgStmt;
+    GenTreeStmt* fgPreviousCandidateSIMDFieldAsgStmt;
 
 #endif // FEATURE_SIMD
     GenTree* fgMorphArrayIndex(GenTree* tree);
@@ -5228,12 +5451,12 @@ private:
     void fgMorphTailCall(GenTreeCall* call, void* pfnCopyArgs);
     GenTree* fgGetStubAddrArg(GenTreeCall* call);
     void fgMorphRecursiveFastTailCallIntoLoop(BasicBlock* block, GenTreeCall* recursiveTailCall);
-    GenTree* fgAssignRecursiveCallArgToCallerParam(GenTree*       arg,
-                                                   fgArgTabEntry* argTabEntry,
-                                                   BasicBlock*    block,
-                                                   IL_OFFSETX     callILOffset,
-                                                   GenTree*       tmpAssignmentInsertionPoint,
-                                                   GenTree*       paramAssignmentInsertionPoint);
+    GenTreeStmt* fgAssignRecursiveCallArgToCallerParam(GenTree*       arg,
+                                                       fgArgTabEntry* argTabEntry,
+                                                       BasicBlock*    block,
+                                                       IL_OFFSETX     callILOffset,
+                                                       GenTreeStmt*   tmpAssignmentInsertionPoint,
+                                                       GenTreeStmt*   paramAssignmentInsertionPoint);
     static int fgEstimateCallStackSize(GenTreeCall* call);
     GenTree* fgMorphCall(GenTreeCall* call);
     void fgMorphCallInline(GenTreeCall* call, InlineResult* result);
@@ -5249,6 +5472,7 @@ private:
     void fgAssignSetVarDef(GenTree* tree);
     GenTree* fgMorphOneAsgBlockOp(GenTree* tree);
     GenTree* fgMorphInitBlock(GenTree* tree);
+    GenTree* fgMorphPromoteLocalInitBlock(GenTreeLclVar* destLclNode, GenTree* initVal, unsigned blockSize);
     GenTree* fgMorphBlkToInd(GenTreeBlk* tree, var_types type);
     GenTree* fgMorphGetStructAddr(GenTree** pTree, CORINFO_CLASS_HANDLE clsHnd, bool isRValue = false);
     GenTree* fgMorphBlkNode(GenTree* tree, bool isDest);
@@ -5359,8 +5583,8 @@ private:
     unsigned fgCheckInlineDepthAndRecursion(InlineInfo* inlineInfo);
     void fgInvokeInlineeCompiler(GenTreeCall* call, InlineResult* result);
     void fgInsertInlineeBlocks(InlineInfo* pInlineInfo);
-    GenTree* fgInlinePrependStatements(InlineInfo* inlineInfo);
-    void fgInlineAppendStatements(InlineInfo* inlineInfo, BasicBlock* block, GenTree* stmt);
+    GenTreeStmt* fgInlinePrependStatements(InlineInfo* inlineInfo);
+    void fgInlineAppendStatements(InlineInfo* inlineInfo, BasicBlock* block, GenTreeStmt* stmt);
 
 #if FEATURE_MULTIREG_RET
     GenTree* fgGetStructAsStructPtr(GenTree* tree);
@@ -5443,15 +5667,11 @@ private:
 public:
     void optInit();
 
-    void optRemoveRangeCheck(GenTree* tree, GenTree* stmt);
+    void optRemoveRangeCheck(GenTree* tree, GenTreeStmt* stmt);
     bool optIsRangeCheckRemovable(GenTree* tree);
 
 protected:
     static fgWalkPreFn optValidRangeCheckIndex;
-    static fgWalkPreFn optRemoveTreeVisitor; // Helper passed to Compiler::fgWalkAllTreesPre() to decrement the LclVar
-                                             // usage counts
-
-    void optRemoveTree(GenTree* deadTree, GenTree* keepList);
 
     /**************************************************************************
      *
@@ -5840,7 +6060,7 @@ protected:
 
     void optUpdateLoopsBeforeRemoveBlock(BasicBlock* block, bool skipUnmarkLoop = false);
 
-    bool optIsLoopTestEvalIntoTemp(GenTree* test, GenTree** newTest);
+    bool optIsLoopTestEvalIntoTemp(GenTreeStmt* testStmt, GenTreeStmt** newTestStmt);
     unsigned optIsLoopIncrTree(GenTree* incr);
     bool optCheckIterInLoopTest(unsigned loopInd, GenTree* test, BasicBlock* from, BasicBlock* to, unsigned iterVar);
     bool optComputeIterInfo(GenTree* incr, BasicBlock* from, BasicBlock* to, unsigned* pIterVar);
@@ -5959,7 +6179,7 @@ protected:
     {
         treeStmtLst* tslNext;
         GenTree*     tslTree;  // tree node
-        GenTree*     tslStmt;  // statement containing the tree
+        GenTreeStmt* tslStmt;  // statement containing the tree
         BasicBlock*  tslBlock; // block containing the statement
     };
 
@@ -5980,9 +6200,9 @@ protected:
         unsigned csdDefWtCnt; // weighted def count
         unsigned csdUseWtCnt; // weighted use count  (excluding the implicit uses at defs)
 
-        GenTree*    csdTree;  // treenode containing the 1st occurance
-        GenTree*    csdStmt;  // stmt containing the 1st occurance
-        BasicBlock* csdBlock; // block containing the 1st occurance
+        GenTree*     csdTree;  // treenode containing the 1st occurance
+        GenTreeStmt* csdStmt;  // stmt containing the 1st occurance
+        BasicBlock*  csdBlock; // block containing the 1st occurance
 
         treeStmtLst* csdTreeList; // list of matching tree nodes: head
         treeStmtLst* csdTreeLast; // list of matching tree nodes: tail
@@ -6053,7 +6273,7 @@ public:
 
 protected:
     void     optValnumCSE_Init();
-    unsigned optValnumCSE_Index(GenTree* tree, GenTree* stmt);
+    unsigned optValnumCSE_Index(GenTree* tree, GenTreeStmt* stmt);
     unsigned optValnumCSE_Locate();
     void     optValnumCSE_InitDataFlow();
     void     optValnumCSE_DataFlow();
@@ -6120,7 +6340,7 @@ public:
     VARSET_TP optCopyPropKillSet;
 
     // Copy propagation functions.
-    void optCopyProp(BasicBlock* block, GenTree* stmt, GenTree* tree, LclNumToGenTreePtrStack* curSsaName);
+    void optCopyProp(BasicBlock* block, GenTreeStmt* stmt, GenTree* tree, LclNumToGenTreePtrStack* curSsaName);
     void optBlockCopyPropPopStacks(BasicBlock* block, LclNumToGenTreePtrStack* curSsaName);
     void optBlockCopyProp(BasicBlock* block, LclNumToGenTreePtrStack* curSsaName);
     bool optIsSsaLocal(GenTree* tree);
@@ -6498,10 +6718,10 @@ protected:
     AssertionIndex optMaxAssertionCount;
 
 public:
-    void optVnNonNullPropCurStmt(BasicBlock* block, GenTree* stmt, GenTree* tree);
-    fgWalkResult optVNConstantPropCurStmt(BasicBlock* block, GenTree* stmt, GenTree* tree);
-    GenTree* optVNConstantPropOnJTrue(BasicBlock* block, GenTree* stmt, GenTree* test);
-    GenTree* optVNConstantPropOnTree(BasicBlock* block, GenTree* stmt, GenTree* tree);
+    void optVnNonNullPropCurStmt(BasicBlock* block, GenTreeStmt* stmt, GenTree* tree);
+    fgWalkResult optVNConstantPropCurStmt(BasicBlock* block, GenTreeStmt* stmt, GenTree* tree);
+    GenTree* optVNConstantPropOnJTrue(BasicBlock* block, GenTree* test);
+    GenTree* optVNConstantPropOnTree(BasicBlock* block, GenTree* tree);
     GenTree* optPrepareTreeForReplacement(GenTree* extractTree, GenTree* replaceTree);
 
     AssertionIndex GetAssertionCount()
@@ -6523,8 +6743,8 @@ public:
 #endif
 
     // Assertion prop data flow functions.
-    void     optAssertionPropMain();
-    GenTree* optVNAssertionPropCurStmt(BasicBlock* block, GenTree* stmt);
+    void         optAssertionPropMain();
+    GenTreeStmt* optVNAssertionPropCurStmt(BasicBlock* block, GenTreeStmt* stmt);
     bool optIsTreeKnownIntValue(bool vnBased, GenTree* tree, ssize_t* pConstant, unsigned* pIconFlags);
     ASSERT_TP* optInitAssertionDataflowFlags();
     ASSERT_TP* optComputeAssertionGen();
@@ -6571,24 +6791,24 @@ public:
     bool optAssertionProp_LclVarTypeCheck(GenTree* tree, LclVarDsc* lclVarDsc, LclVarDsc* copyVarDsc);
     GenTree* optCopyAssertionProp(AssertionDsc* curAssertion,
                                   GenTree*      tree,
-                                  GenTree* stmt DEBUGARG(AssertionIndex index));
+                                  GenTreeStmt* stmt DEBUGARG(AssertionIndex index));
     GenTree* optConstantAssertionProp(AssertionDsc* curAssertion,
                                       GenTree*      tree,
-                                      GenTree* stmt DEBUGARG(AssertionIndex index));
+                                      GenTreeStmt* stmt DEBUGARG(AssertionIndex index));
 
     // Assertion propagation functions.
-    GenTree* optAssertionProp(ASSERT_VALARG_TP assertions, GenTree* tree, GenTree* stmt);
-    GenTree* optAssertionProp_LclVar(ASSERT_VALARG_TP assertions, GenTree* tree, GenTree* stmt);
-    GenTree* optAssertionProp_Ind(ASSERT_VALARG_TP assertions, GenTree* tree, GenTree* stmt);
-    GenTree* optAssertionProp_Cast(ASSERT_VALARG_TP assertions, GenTree* tree, GenTree* stmt);
-    GenTree* optAssertionProp_Call(ASSERT_VALARG_TP assertions, GenTreeCall* call, GenTree* stmt);
-    GenTree* optAssertionProp_RelOp(ASSERT_VALARG_TP assertions, GenTree* tree, GenTree* stmt);
-    GenTree* optAssertionProp_Comma(ASSERT_VALARG_TP assertions, GenTree* tree, GenTree* stmt);
-    GenTree* optAssertionProp_BndsChk(ASSERT_VALARG_TP assertions, GenTree* tree, GenTree* stmt);
-    GenTree* optAssertionPropGlobal_RelOp(ASSERT_VALARG_TP assertions, GenTree* tree, GenTree* stmt);
-    GenTree* optAssertionPropLocal_RelOp(ASSERT_VALARG_TP assertions, GenTree* tree, GenTree* stmt);
-    GenTree* optAssertionProp_Update(GenTree* newTree, GenTree* tree, GenTree* stmt);
-    GenTree* optNonNullAssertionProp_Call(ASSERT_VALARG_TP assertions, GenTreeCall* call, GenTree* stmt);
+    GenTree* optAssertionProp(ASSERT_VALARG_TP assertions, GenTree* tree, GenTreeStmt* stmt);
+    GenTree* optAssertionProp_LclVar(ASSERT_VALARG_TP assertions, GenTree* tree, GenTreeStmt* stmt);
+    GenTree* optAssertionProp_Ind(ASSERT_VALARG_TP assertions, GenTree* tree, GenTreeStmt* stmt);
+    GenTree* optAssertionProp_Cast(ASSERT_VALARG_TP assertions, GenTree* tree, GenTreeStmt* stmt);
+    GenTree* optAssertionProp_Call(ASSERT_VALARG_TP assertions, GenTreeCall* call, GenTreeStmt* stmt);
+    GenTree* optAssertionProp_RelOp(ASSERT_VALARG_TP assertions, GenTree* tree, GenTreeStmt* stmt);
+    GenTree* optAssertionProp_Comma(ASSERT_VALARG_TP assertions, GenTree* tree, GenTreeStmt* stmt);
+    GenTree* optAssertionProp_BndsChk(ASSERT_VALARG_TP assertions, GenTree* tree);
+    GenTree* optAssertionPropGlobal_RelOp(ASSERT_VALARG_TP assertions, GenTree* tree, GenTreeStmt* stmt);
+    GenTree* optAssertionPropLocal_RelOp(ASSERT_VALARG_TP assertions, GenTree* tree, GenTreeStmt* stmt);
+    GenTree* optAssertionProp_Update(GenTree* newTree, GenTree* tree, GenTreeStmt* stmt);
+    GenTree* optNonNullAssertionProp_Call(ASSERT_VALARG_TP assertions, GenTreeCall* call);
 
     // Implied assertion functions.
     void optImpliedAssertions(AssertionIndex assertionIndex, ASSERT_TP& activeAssertions);
@@ -6613,8 +6833,8 @@ public:
     {
         LoopCloneContext* context;
         unsigned          loopNum;
-        GenTree*          stmt;
-        LoopCloneVisitorInfo(LoopCloneContext* context, unsigned loopNum, GenTree* stmt)
+        GenTreeStmt*      stmt;
+        LoopCloneVisitorInfo(LoopCloneContext* context, unsigned loopNum, GenTreeStmt* stmt)
             : context(context), loopNum(loopNum), stmt(nullptr)
         {
         }
@@ -6632,7 +6852,7 @@ public:
     bool optCanCloneLoops();
 
 #ifdef DEBUG
-    void optDebugLogLoopCloning(BasicBlock* block, GenTree* insertBefore);
+    void optDebugLogLoopCloning(BasicBlock* block, GenTreeStmt* insertBefore);
 #endif
     void optPerformStaticOptimizations(unsigned loopNum, LoopCloneContext* context DEBUGARG(bool fastPath));
     bool optComputeDerefConditions(unsigned loopNum, LoopCloneContext* context);
@@ -6717,138 +6937,6 @@ private:
     XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
     XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
     */
-
-public:
-    /* These are the different addressing modes used to access a local var.
-     * The JIT has to report the location of the locals back to the EE
-     * for debugging purposes.
-     */
-
-    enum siVarLocType
-    {
-        VLT_REG,
-        VLT_REG_BYREF, // this type is currently only used for value types on X64
-        VLT_REG_FP,
-        VLT_STK,
-        VLT_STK_BYREF, // this type is currently only used for value types on X64
-        VLT_REG_REG,
-        VLT_REG_STK,
-        VLT_STK_REG,
-        VLT_STK2,
-        VLT_FPSTK,
-        VLT_FIXED_VA,
-
-        VLT_COUNT,
-        VLT_INVALID
-    };
-
-    struct siVarLoc
-    {
-        siVarLocType vlType;
-
-        union {
-            // VLT_REG/VLT_REG_FP -- Any pointer-sized enregistered value (TYP_INT, TYP_REF, etc)
-            // eg. EAX
-            // VLT_REG_BYREF -- the specified register contains the address of the variable
-            // eg. [EAX]
-
-            struct
-            {
-                regNumber vlrReg;
-            } vlReg;
-
-            // VLT_STK       -- Any 32 bit value which is on the stack
-            // eg. [ESP+0x20], or [EBP-0x28]
-            // VLT_STK_BYREF -- the specified stack location contains the address of the variable
-            // eg. mov EAX, [ESP+0x20]; [EAX]
-
-            struct
-            {
-                regNumber     vlsBaseReg;
-                NATIVE_OFFSET vlsOffset;
-            } vlStk;
-
-            // VLT_REG_REG -- TYP_LONG/TYP_DOUBLE with both DWords enregistered
-            // eg. RBM_EAXEDX
-
-            struct
-            {
-                regNumber vlrrReg1;
-                regNumber vlrrReg2;
-            } vlRegReg;
-
-            // VLT_REG_STK -- Partly enregistered TYP_LONG/TYP_DOUBLE
-            // eg { LowerDWord=EAX UpperDWord=[ESP+0x8] }
-
-            struct
-            {
-                regNumber vlrsReg;
-
-                struct
-                {
-                    regNumber     vlrssBaseReg;
-                    NATIVE_OFFSET vlrssOffset;
-                } vlrsStk;
-            } vlRegStk;
-
-            // VLT_STK_REG -- Partly enregistered TYP_LONG/TYP_DOUBLE
-            // eg { LowerDWord=[ESP+0x8] UpperDWord=EAX }
-
-            struct
-            {
-                struct
-                {
-                    regNumber     vlsrsBaseReg;
-                    NATIVE_OFFSET vlsrsOffset;
-                } vlsrStk;
-
-                regNumber vlsrReg;
-            } vlStkReg;
-
-            // VLT_STK2 -- Any 64 bit value which is on the stack, in 2 successsive DWords
-            // eg 2 DWords at [ESP+0x10]
-
-            struct
-            {
-                regNumber     vls2BaseReg;
-                NATIVE_OFFSET vls2Offset;
-            } vlStk2;
-
-            // VLT_FPSTK -- enregisterd TYP_DOUBLE (on the FP stack)
-            // eg. ST(3). Actually it is ST("FPstkHeight - vpFpStk")
-
-            struct
-            {
-                unsigned vlfReg;
-            } vlFPstk;
-
-            // VLT_FIXED_VA -- fixed argument of a varargs function.
-            // The argument location depends on the size of the variable
-            // arguments (...). Inspecting the VARARGS_HANDLE indicates the
-            // location of the first arg. This argument can then be accessed
-            // relative to the position of the first arg
-
-            struct
-            {
-                unsigned vlfvOffset;
-            } vlFixedVarArg;
-
-            // VLT_MEMORY
-
-            struct
-            {
-                void* rpValue; // pointer to the in-process
-                               // location of the value.
-            } vlMemory;
-        };
-
-        // Helper functions
-
-        bool vlIsInReg(regNumber reg);
-        bool vlIsOnStk(regNumber reg, signed offset);
-    };
-
-    /*************************************************************************/
 
 public:
     // Get handles
@@ -6940,13 +7028,13 @@ public:
     GenTree* eeGetPInvokeCookie(CORINFO_SIG_INFO* szMetaSig);
 
     // Returns the page size for the target machine as reported by the EE.
-    inline target_size_t eeGetPageSize()
+    target_size_t eeGetPageSize()
     {
         return (target_size_t)eeGetEEInfo()->osPageSize;
     }
 
     // Returns the frame size at which we will generate a loop to probe the stack.
-    inline target_size_t getVeryLargeFrameSize()
+    target_size_t getVeryLargeFrameSize()
     {
 #ifdef _TARGET_ARM_
         // The looping probe code is 40 bytes, whereas the straight-line probing for
@@ -7018,12 +7106,12 @@ public:
 
     VirtualStubParamInfo* virtualStubParamInfo;
 
-    inline bool IsTargetAbi(CORINFO_RUNTIME_ABI abi)
+    bool IsTargetAbi(CORINFO_RUNTIME_ABI abi)
     {
         return eeGetEEInfo()->targetAbi == abi;
     }
 
-    inline bool generateCFIUnwindCodes()
+    bool generateCFIUnwindCodes()
     {
 #if defined(_TARGET_UNIX_)
         return IsTargetAbi(CORINFO_CORERT_ABI);
@@ -7062,20 +7150,17 @@ public:
 
     struct VarResultInfo
     {
-        UNATIVE_OFFSET startOffset;
-        UNATIVE_OFFSET endOffset;
-        DWORD          varNumber;
-        siVarLoc       loc;
+        UNATIVE_OFFSET             startOffset;
+        UNATIVE_OFFSET             endOffset;
+        DWORD                      varNumber;
+        CodeGenInterface::siVarLoc loc;
     } * eeVars;
     void eeSetLVcount(unsigned count);
-    void eeSetLVinfo(unsigned        which,
-                     UNATIVE_OFFSET  startOffs,
-                     UNATIVE_OFFSET  length,
-                     unsigned        varNum,
-                     unsigned        LVnum,
-                     VarName         namex,
-                     bool            avail,
-                     const siVarLoc& loc);
+    void eeSetLVinfo(unsigned                          which,
+                     UNATIVE_OFFSET                    startOffs,
+                     UNATIVE_OFFSET                    length,
+                     unsigned                          varNum,
+                     const CodeGenInterface::siVarLoc& loc);
     void eeSetLVdone();
 
 #ifdef DEBUG
@@ -7199,12 +7284,12 @@ public:
     // the setter on CodeGenContext directly.
 
     __declspec(property(get = getEmitter)) emitter* genEmitter;
-    emitter* getEmitter()
+    emitter* getEmitter() const
     {
         return codeGen->getEmitter();
     }
 
-    bool isFramePointerUsed()
+    bool isFramePointerUsed() const
     {
         return codeGen->isFramePointerUsed();
     }
@@ -7299,20 +7384,12 @@ public:
     template <bool ForCodeGen>
     void compChangeLife(VARSET_VALARG_TP newLife);
 
-    void genChangeLife(VARSET_VALARG_TP newLife)
-    {
-        compChangeLife</*ForCodeGen*/ true>(newLife);
-    }
-
     template <bool ForCodeGen>
     inline void compUpdateLife(VARSET_VALARG_TP newLife);
 
     // Gets a register mask that represent the kill set for a helper call since
     // not all JIT Helper calls follow the standard ABI on the target architecture.
     regMaskTP compHelperCallKillSet(CorInfoHelpFunc helper);
-
-    // Gets a register mask that represent the kill set for a NoGC helper call.
-    regMaskTP compNoGCHelperCallKillSet(CorInfoHelpFunc helper);
 
 #ifdef _TARGET_ARM_
     // Requires that "varDsc" be a promoted struct local variable being passed as an argument, beginning at
@@ -7486,10 +7563,6 @@ private:
                      UNATIVE_OFFSET        endOffset,
                      DWORD                 cfiCodeBytes,
                      const CFI_CODE* const pCfiCode);
-#endif
-#if defined(_TARGET_ARM_)
-    bool unwindCfiEpilogFormed; // Avoid duplicated unwind info for methods with multiple epilogs (we expect and require
-                                // all the epilogs to be precisely the same)
 #endif
 
 #endif // _TARGET_UNIX_
@@ -7904,6 +7977,7 @@ private:
                               CORINFO_CLASS_HANDLE  clsHnd,
                               CORINFO_METHOD_HANDLE method,
                               CORINFO_SIG_INFO*     sig,
+                              unsigned              methodFlags,
                               int                   memberRef);
 
     GenTree* getOp1ForConstructor(OPCODE opcode, GenTree* newobjThis, CORINFO_CLASS_HANDLE clsHnd);
@@ -8190,9 +8264,6 @@ public:
 
     bool fgLocalVarLivenessDone; // Note that this one is used outside of debug.
     bool fgLocalVarLivenessChanged;
-#if STACK_PROBES
-    bool compStackProbePrologDone;
-#endif
     bool compLSRADone;
     bool compRationalIRForm;
 
@@ -8264,27 +8335,37 @@ public:
 #ifdef DEBUG
         bool compMinOptsIsUsed;
 
-        inline bool MinOpts()
+        bool MinOpts()
         {
             assert(compMinOptsIsSet);
             compMinOptsIsUsed = true;
             return compMinOpts;
         }
-        inline bool IsMinOptsSet()
+        bool IsMinOptsSet()
         {
             return compMinOptsIsSet;
         }
 #else  // !DEBUG
-        inline bool MinOpts()
+        bool MinOpts()
         {
             return compMinOpts;
         }
-        inline bool IsMinOptsSet()
+        bool IsMinOptsSet()
         {
             return compMinOptsIsSet;
         }
 #endif // !DEBUG
-        inline void SetMinOpts(bool val)
+
+        bool OptimizationDisabled()
+        {
+            return MinOpts() || compDbgCode;
+        }
+        bool OptimizationEnabled()
+        {
+            return !OptimizationDisabled();
+        }
+
+        void SetMinOpts(bool val)
         {
             assert(!compMinOptsIsUsed);
             assert(!compMinOptsIsSet || (compMinOpts == val));
@@ -8293,18 +8374,18 @@ public:
         }
 
         // true if the CLFLG_* for an optimization is set.
-        inline bool OptEnabled(unsigned optFlag)
+        bool OptEnabled(unsigned optFlag)
         {
             return !!(compFlags & optFlag);
         }
 
 #ifdef FEATURE_READYTORUN_COMPILER
-        inline bool IsReadyToRun()
+        bool IsReadyToRun()
         {
             return jitFlags->IsSet(JitFlags::JIT_FLAG_READYTORUN);
         }
 #else
-        inline bool IsReadyToRun()
+        bool IsReadyToRun()
         {
             return false;
         }
@@ -8312,20 +8393,20 @@ public:
 
         // true if we should use the PINVOKE_{BEGIN,END} helpers instead of generating
         // PInvoke transitions inline (e.g. when targeting CoreRT).
-        inline bool ShouldUsePInvokeHelpers()
+        bool ShouldUsePInvokeHelpers()
         {
             return jitFlags->IsSet(JitFlags::JIT_FLAG_USE_PINVOKE_HELPERS);
         }
 
         // true if we should use insert the REVERSE_PINVOKE_{ENTER,EXIT} helpers in the method
         // prolog/epilog
-        inline bool IsReversePInvoke()
+        bool IsReversePInvoke()
         {
             return jitFlags->IsSet(JitFlags::JIT_FLAG_REVERSE_PINVOKE);
         }
 
         // true if we must generate code compatible with JIT32 quirks
-        inline bool IsJit32Compat()
+        bool IsJit32Compat()
         {
 #if defined(_TARGET_X86_)
             return jitFlags->IsSet(JitFlags::JIT_FLAG_DESKTOP_QUIRKS);
@@ -8335,7 +8416,7 @@ public:
         }
 
         // true if we must generate code compatible with Jit64 quirks
-        inline bool IsJit64Compat()
+        bool IsJit64Compat()
         {
 #if defined(_TARGET_AMD64_)
             return jitFlags->IsSet(JitFlags::JIT_FLAG_DESKTOP_QUIRKS);
@@ -8449,15 +8530,6 @@ public:
         static const bool dspGCtbls = true;
 #endif
 
-        // We need stack probes to guarantee that we won't trigger a stack overflow
-        // when calling unmanaged code until they get a chance to set up a frame, because
-        // the EE will have no idea where it is.
-        //
-        // We will only be doing this currently for hosted environments. Unfortunately
-        // we need to take care of stubs, so potentially, we will have to do the probes
-        // for any call. We have a plan for not needing for stubs though
-        bool compNeedStackProbes;
-
 #ifdef PROFILING_SUPPORTED
         // Whether to emit Enter/Leave/TailCall hooks using a dummy stub (DummyProfilerELTStub()).
         // This option helps make the JIT behave as if it is running under a profiler.
@@ -8470,6 +8542,12 @@ public:
         // Whether optimization of transforming a recursive tail call into a loop is enabled.
         bool compTailCallLoopOpt;
 #endif
+
+#if defined(_TARGET_ARM64_)
+        // Decision about whether to save FP/LR registers with callee-saved registers (see
+        // COMPlus_JitSaveFpLrWithCalleSavedRegisters).
+        int compJitSaveFpLrWithCalleeSavedRegisters;
+#endif // defined(_TARGET_ARM64_)
 
 #ifdef ARM_SOFTFP
         static const bool compUseSoftFP = true;
@@ -8488,6 +8566,9 @@ public:
 #ifdef DEBUG
     static bool                s_pJitDisasmIncludeAssembliesListInitialized;
     static AssemblyNamesList2* s_pJitDisasmIncludeAssembliesList;
+
+    static bool       s_pJitFunctionFileInitialized;
+    static MethodSet* s_pJitMethodSet;
 #endif // DEBUG
 
 #ifdef DEBUG
@@ -8674,6 +8755,7 @@ public:
 
         const BYTE*    compCode;
         IL_OFFSET      compILCodeSize;     // The IL code size
+        IL_OFFSET      compILImportSize;   // Estimated amount of IL actually imported
         UNATIVE_OFFSET compNativeCodeSize; // The native code size, after instructions are issued. This
                                            // is less than (compTotalHotCodeSize + compTotalColdCodeSize) only if:
         // (1) the code is not hot/cold split, and we issued less code than we expected, or
@@ -8695,8 +8777,9 @@ public:
         unsigned  compArgsCount;     // Number of arguments (incl. implicit and     hidden)
 
 #if FEATURE_FASTTAILCALL
-        size_t compArgStackSize; // Incoming argument stack size in bytes
-#endif                           // FEATURE_FASTTAILCALL
+        size_t compArgStackSize;     // Incoming argument stack size in bytes
+        bool   compHasMultiSlotArgs; // Caller has >8 byte sized struct parameter
+#endif                               // FEATURE_FASTTAILCALL
 
         unsigned compRetBuffArg; // position of hidden return param var (0, 1) (BAD_VAR_NUM means not present);
         int compTypeCtxtArg; // position of hidden param for type context for generic code (CORINFO_CALLCONV_PARAMTYPE)
@@ -8833,8 +8916,8 @@ public:
     unsigned        compBasicBlockID;
 #endif
 
-    BasicBlock* compCurBB;   // the current basic block in process
-    GenTree*    compCurStmt; // the current statement in process
+    BasicBlock*  compCurBB;   // the current basic block in process
+    GenTreeStmt* compCurStmt; // the current statement in process
 #ifdef DEBUG
     unsigned compCurStmtNum; // to give all statements an increasing StmtNum when printing dumps
 #endif
@@ -8885,9 +8968,9 @@ public:
 
     unsigned compArgSize; // total size of arguments in bytes (including register args (lvIsRegArg))
 
-    unsigned compMapILargNum(unsigned ILargNum); // map accounting for hidden args
-    unsigned compMapILvarNum(unsigned ILvarNum); // map accounting for hidden args
-    unsigned compMap2ILvarNum(unsigned varNum);  // map accounting for hidden args
+    unsigned compMapILargNum(unsigned ILargNum);      // map accounting for hidden args
+    unsigned compMapILvarNum(unsigned ILvarNum);      // map accounting for hidden args
+    unsigned compMap2ILvarNum(unsigned varNum) const; // map accounting for hidden args
 
     //-------------------------------------------------------------------------
 
@@ -8957,12 +9040,12 @@ public:
 #endif // LOOP_HOIST_STATS
 
     bool compIsForImportOnly();
-    bool compIsForInlining();
+    bool compIsForInlining() const;
     bool compDonotInline();
 
 #ifdef DEBUG
-    unsigned char compGetJitDefaultFill(); // Get the default fill char value
-                                           // we randomize this value when JitStress is enabled
+    // Get the default fill char value we randomize this value when JitStress is enabled.
+    static unsigned char compGetJitDefaultFill(Compiler* comp);
 
     const char* compLocalVarName(unsigned varNum, unsigned offs);
     VarName compVarName(regNumber reg, bool isFloatReg = false);
@@ -9551,7 +9634,7 @@ public:
     //
     // Returns:
     //    True if the `GT_IND` node represents an array access; false otherwise.
-    inline bool TryGetArrayInfo(GenTreeIndir* indir, ArrayInfo* arrayInfo)
+    bool TryGetArrayInfo(GenTreeIndir* indir, ArrayInfo* arrayInfo)
     {
         if ((indir->gtFlags & GTF_IND_ARR_INDEX) == 0)
         {
@@ -9648,25 +9731,6 @@ public:
     bool killGCRefs(GenTree* tree);
 
 }; // end of class Compiler
-
-// LclVarDsc constructor. Uses Compiler, so must come after Compiler definition.
-inline LclVarDsc::LclVarDsc()
-    : // Initialize the ArgRegs to REG_STK.
-    // The morph will do the right thing to change
-    // to the right register if passed in register.
-    _lvArgReg(REG_STK)
-    ,
-#if FEATURE_MULTIREG_ARGS
-    _lvOtherArgReg(REG_STK)
-    ,
-#endif // FEATURE_MULTIREG_ARGS
-#if ASSERTION_PROP
-    lvRefBlks(BlockSetOps::UninitVal())
-    ,
-#endif // ASSERTION_PROP
-    lvPerSsaData()
-{
-}
 
 //---------------------------------------------------------------------------------------------------------------------
 // GenTreeVisitor: a flexible tree walker implemented using the curiosly-recurring-template pattern.
@@ -9816,6 +9880,7 @@ public:
             case GT_SETCC:
             case GT_NO_OP:
             case GT_START_NONGC:
+            case GT_START_PREEMPTGC:
             case GT_PROF_HOOK:
 #if !FEATURE_EH_FUNCLETS
             case GT_END_LFIN:
@@ -10439,14 +10504,6 @@ extern BasicBlock dummyBB;
 
 /*****************************************************************************/
 /*****************************************************************************/
-
-// foreach_treenode_execution_order: An iterator that iterates through all the tree
-// nodes of a statement in execution order.
-//      __stmt: a GT_STMT type GenTree*
-//      __node: a GenTree*, already declared, that gets updated with each node in the statement, in execution order
-
-#define foreach_treenode_execution_order(__node, __stmt)                                                               \
-    for ((__node) = (__stmt)->gtStmt.gtStmtList; (__node); (__node) = (__node)->gtNext)
 
 // foreach_block: An iterator over all blocks in the function.
 //    __compiler: the Compiler* object

@@ -132,6 +132,8 @@ public:
     virtual
     void FireBGC1stConEnd() = 0;
     virtual
+    void FireBGC1stSweepEnd(uint32_t genNumber) = 0;
+    virtual
     void FireBGC2ndNonConBegin() = 0;
     virtual
     void FireBGC2ndNonConEnd() = 0;
@@ -430,6 +432,12 @@ public:
 
     virtual
     void AnalyzeSurvivorsFinished(int condemnedGeneration) = 0;
+
+    virtual 
+    void VerifySyncTableEntry() = 0;
+
+    virtual
+    void UpdateGCEventStatus(int publicLevel, int publicKeywords, int privateLEvel, int privateKeywords) = 0;
 };
 
 #endif // _GCINTERFACE_EE_H_

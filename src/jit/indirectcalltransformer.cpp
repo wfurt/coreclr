@@ -333,14 +333,14 @@ private:
         //
         virtual void CreateCheck()
         {
-            checkBlock               = CreateAndInsertBasicBlock(BBJ_COND, currBlock);
-            GenTree* fatPointerMask  = new (compiler, GT_CNS_INT) GenTreeIntCon(TYP_I_IMPL, FAT_POINTER_MASK);
-            GenTree* fptrAddressCopy = compiler->gtCloneExpr(fptrAddress);
-            GenTree* fatPointerAnd   = compiler->gtNewOperNode(GT_AND, TYP_I_IMPL, fptrAddressCopy, fatPointerMask);
-            GenTree* zero            = new (compiler, GT_CNS_INT) GenTreeIntCon(TYP_I_IMPL, 0);
-            GenTree* fatPointerCmp   = compiler->gtNewOperNode(GT_NE, TYP_INT, fatPointerAnd, zero);
-            GenTree* jmpTree         = compiler->gtNewOperNode(GT_JTRUE, TYP_VOID, fatPointerCmp);
-            GenTree* jmpStmt         = compiler->fgNewStmtFromTree(jmpTree, stmt->gtStmt.gtStmtILoffsx);
+            checkBlock                   = CreateAndInsertBasicBlock(BBJ_COND, currBlock);
+            GenTree*     fatPointerMask  = new (compiler, GT_CNS_INT) GenTreeIntCon(TYP_I_IMPL, FAT_POINTER_MASK);
+            GenTree*     fptrAddressCopy = compiler->gtCloneExpr(fptrAddress);
+            GenTree*     fatPointerAnd   = compiler->gtNewOperNode(GT_AND, TYP_I_IMPL, fptrAddressCopy, fatPointerMask);
+            GenTree*     zero            = new (compiler, GT_CNS_INT) GenTreeIntCon(TYP_I_IMPL, 0);
+            GenTree*     fatPointerCmp   = compiler->gtNewOperNode(GT_NE, TYP_INT, fatPointerAnd, zero);
+            GenTree*     jmpTree         = compiler->gtNewOperNode(GT_JTRUE, TYP_VOID, fatPointerCmp);
+            GenTreeStmt* jmpStmt         = compiler->fgNewStmtFromTree(jmpTree, stmt->gtStmtILoffsx);
             compiler->fgInsertStmtAtEnd(checkBlock, jmpStmt);
         }
 
@@ -350,8 +350,8 @@ private:
         //
         virtual void CreateThen()
         {
-            thenBlock                   = CreateAndInsertBasicBlock(BBJ_ALWAYS, checkBlock);
-            GenTree* copyOfOriginalStmt = compiler->gtCloneExpr(stmt)->AsStmt();
+            thenBlock                       = CreateAndInsertBasicBlock(BBJ_ALWAYS, checkBlock);
+            GenTreeStmt* copyOfOriginalStmt = compiler->gtCloneExpr(stmt)->AsStmt();
             compiler->fgInsertStmtAtEnd(thenBlock, copyOfOriginalStmt);
         }
 
@@ -566,8 +566,8 @@ private:
             {
                 const unsigned thisTempNum = compiler->lvaGrabTemp(true DEBUGARG("guarded devirt this temp"));
                 // lvaSetClass(thisTempNum, ...);
-                GenTree* asgTree = compiler->gtNewTempAssign(thisTempNum, thisTree);
-                GenTree* asgStmt = compiler->fgNewStmtFromTree(asgTree, stmt->gtStmt.gtStmtILoffsx);
+                GenTree*     asgTree = compiler->gtNewTempAssign(thisTempNum, thisTree);
+                GenTreeStmt* asgStmt = compiler->fgNewStmtFromTree(asgTree, stmt->gtStmtILoffsx);
                 compiler->fgInsertStmtAtEnd(checkBlock, asgStmt);
 
                 thisTree = compiler->gtNewLclvNode(thisTempNum, TYP_REF);
@@ -586,9 +586,9 @@ private:
             GenTree*                              targetMethodTable = compiler->gtNewIconEmbClsHndNode(clsHnd);
 
             // Compare and jump to else (which does the indirect call) if NOT equal
-            GenTree* methodTableCompare = compiler->gtNewOperNode(GT_NE, TYP_INT, targetMethodTable, methodTable);
-            GenTree* jmpTree            = compiler->gtNewOperNode(GT_JTRUE, TYP_VOID, methodTableCompare);
-            GenTree* jmpStmt            = compiler->fgNewStmtFromTree(jmpTree, stmt->gtStmt.gtStmtILoffsx);
+            GenTree*     methodTableCompare = compiler->gtNewOperNode(GT_NE, TYP_INT, targetMethodTable, methodTable);
+            GenTree*     jmpTree            = compiler->gtNewOperNode(GT_JTRUE, TYP_VOID, methodTableCompare);
+            GenTreeStmt* jmpStmt            = compiler->fgNewStmtFromTree(jmpTree, stmt->gtStmtILoffsx);
             compiler->fgInsertStmtAtEnd(checkBlock, jmpStmt);
         }
 
@@ -676,14 +676,16 @@ private:
 
             JITDUMP("Direct call [%06u] in block BB%02u\n", compiler->dspTreeID(call), thenBlock->bbNum);
 
-            // Then invoke impDevirtualizeCall do actually
+            // Then invoke impDevirtualizeCall to actually
             // transform the call for us. It should succeed.... as we have
             // now provided an exact typed this.
             CORINFO_METHOD_HANDLE  methodHnd              = inlineInfo->methInfo.ftn;
             unsigned               methodFlags            = inlineInfo->methAttr;
             CORINFO_CONTEXT_HANDLE context                = inlineInfo->exactContextHnd;
             const bool             isLateDevirtualization = true;
-            compiler->impDevirtualizeCall(call, &methodHnd, &methodFlags, &context, nullptr, isLateDevirtualization);
+            bool explicitTailCall = (call->gtCall.gtCallMoreFlags & GTF_CALL_M_EXPLICIT_TAILCALL) != 0;
+            compiler->impDevirtualizeCall(call, &methodHnd, &methodFlags, &context, nullptr, isLateDevirtualization,
+                                          explicitTailCall);
 
             // Presumably devirt might fail? If so we should try and avoid
             // making this a guarded devirt candidate instead of ending

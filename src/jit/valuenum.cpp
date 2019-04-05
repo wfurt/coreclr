@@ -2525,12 +2525,16 @@ TailCall:
             }
         }
 
-        // Otherwise, assign a new VN for the function application.
-        Chunk*   c                                                     = GetAllocChunk(typ, CEA_Func2);
-        unsigned offsetWithinChunk                                     = c->AllocVN();
-        res                                                            = c->m_baseVN + offsetWithinChunk;
-        reinterpret_cast<VNDefFunc2Arg*>(c->m_defs)[offsetWithinChunk] = fstruct;
-        GetVNFunc2Map()->Set(fstruct, res);
+        // We may have run out of budget and already assigned a result
+        if (!GetVNFunc2Map()->Lookup(fstruct, &res))
+        {
+            // Otherwise, assign a new VN for the function application.
+            Chunk*   c                                                     = GetAllocChunk(typ, CEA_Func2);
+            unsigned offsetWithinChunk                                     = c->AllocVN();
+            res                                                            = c->m_baseVN + offsetWithinChunk;
+            reinterpret_cast<VNDefFunc2Arg*>(c->m_defs)[offsetWithinChunk] = fstruct;
+            GetVNFunc2Map()->Set(fstruct, res);
+        }
         return res;
     }
 }
@@ -5755,10 +5759,9 @@ void Compiler::fgValueNumber()
         for (BasicBlock* blk = fgFirstBB; blk != nullptr; blk = blk->bbNext)
         {
             // Now iterate over the block's statements, and their trees.
-            for (GenTree* stmts = blk->FirstNonPhiDef(); stmts != nullptr; stmts = stmts->gtNext)
+            for (GenTreeStmt* stmt = blk->FirstNonPhiDef(); stmt != nullptr; stmt = stmt->getNextStmt())
             {
-                assert(stmts->IsStatement());
-                for (GenTree* tree = stmts->gtStmt.gtStmtList; tree; tree = tree->gtNext)
+                for (GenTree* tree = stmt->gtStmtList; tree != nullptr; tree = tree->gtNext)
                 {
                     tree->gtVNPair.SetBoth(ValueNumStore::NoVN);
                 }
@@ -5919,16 +5922,14 @@ void Compiler::fgValueNumberBlock(BasicBlock* blk)
     compCurStmtNum = blk->bbStmtNum - 1; // Set compCurStmtNum
 #endif
 
-    unsigned outerLoopNum = BasicBlock::NOT_IN_LOOP;
-
     // First: visit phi's.  If "newVNForPhis", give them new VN's.  If not,
     // first check to see if all phi args have the same value.
-    GenTree* firstNonPhi = blk->FirstNonPhiDef();
-    for (GenTree* phiDefs = blk->bbTreeList; phiDefs != firstNonPhi; phiDefs = phiDefs->gtNext)
+    GenTreeStmt* firstNonPhi = blk->FirstNonPhiDef();
+    for (GenTreeStmt* phiDefStmt = blk->firstStmt(); phiDefStmt != firstNonPhi; phiDefStmt = phiDefStmt->getNextStmt())
     {
         // TODO-Cleanup: It has been proposed that we should have an IsPhiDef predicate.  We would use it
         // in Block::FirstNonPhiDef as well.
-        GenTree* phiDef = phiDefs->gtStmt.gtStmtExpr;
+        GenTree* phiDef = phiDefStmt->gtStmtExpr;
         assert(phiDef->OperGet() == GT_ASG);
         GenTreeLclVarCommon* newSsaVar = phiDef->gtOp.gtOp1->AsLclVarCommon();
 
@@ -6131,21 +6132,19 @@ void Compiler::fgValueNumberBlock(BasicBlock* blk)
     }
 
     // Now iterate over the remaining statements, and their trees.
-    for (GenTree* stmt = firstNonPhi; stmt != nullptr; stmt = stmt->gtNext)
+    for (GenTreeStmt* stmt = firstNonPhi; stmt != nullptr; stmt = stmt->getNextStmt())
     {
-        assert(stmt->IsStatement());
-
 #ifdef DEBUG
         compCurStmtNum++;
         if (verbose)
         {
             printf("\n***** " FMT_BB ", stmt %d (before)\n", blk->bbNum, compCurStmtNum);
-            gtDispTree(stmt->gtStmt.gtStmtExpr);
+            gtDispTree(stmt->gtStmtExpr);
             printf("\n");
         }
 #endif
 
-        for (GenTree* tree = stmt->gtStmt.gtStmtList; tree; tree = tree->gtNext)
+        for (GenTree* tree = stmt->gtStmtList; tree != nullptr; tree = tree->gtNext)
         {
             fgValueNumberTree(tree);
         }
@@ -6154,7 +6153,7 @@ void Compiler::fgValueNumberBlock(BasicBlock* blk)
         if (verbose)
         {
             printf("\n***** " FMT_BB ", stmt %d (after)\n", blk->bbNum, compCurStmtNum);
-            gtDispTree(stmt->gtStmt.gtStmtExpr);
+            gtDispTree(stmt->gtStmtExpr);
             printf("\n");
             if (stmt->gtNext)
             {
@@ -6316,7 +6315,10 @@ ValueNum Compiler::fgMemoryVNForLoopSideEffects(MemoryKind  memoryKind,
                 if (verbose)
                 {
                     var_types elemTyp = DecodeElemType(elemClsHnd);
-                    if (varTypeIsStruct(elemTyp))
+                    // If a valid class handle is given when the ElemType is set, DecodeElemType will
+                    // return TYP_STRUCT, and elemClsHnd is that handle.
+                    // Otherwise, elemClsHnd is NOT a valid class handle, and is the encoded var_types value.
+                    if (elemTyp == TYP_STRUCT)
                     {
                         printf("     Array map %s[]\n", eeGetClassName(elemClsHnd));
                     }
@@ -7842,7 +7844,6 @@ void Compiler::fgValueNumberTree(GenTree* tree)
             // can recognize redundant loads with no stores between them.
             GenTree*             addr         = tree->AsIndir()->Addr();
             GenTreeLclVarCommon* lclVarTree   = nullptr;
-            FieldSeqNode*        fldSeq1      = nullptr;
             FieldSeqNode*        fldSeq2      = nullptr;
             GenTree*             obj          = nullptr;
             GenTree*             staticOffset = nullptr;
@@ -7883,9 +7884,6 @@ void Compiler::fgValueNumberTree(GenTree* tree)
 
                 ValueNum      inxVN  = ValueNumStore::NoVN;
                 FieldSeqNode* fldSeq = nullptr;
-
-                // GenTree* addr = tree->gtOp.gtOp1;
-                ValueNum addrVN = addrNvnp.GetLiberal();
 
                 // Try to parse it.
                 GenTree* arr = nullptr;
@@ -9236,15 +9234,6 @@ void Compiler::fgValueNumberAddExceptionSetForIndirection(GenTree* tree, GenTree
     while (vnStore->GetVNFunc(baseLVN, &funcAttr) && (funcAttr.m_func == (VNFunc)GT_ADD) &&
            (vnStore->TypeOfVN(baseLVN) == TYP_BYREF))
     {
-        if (fgIsBigOffset(offsetL))
-        {
-            // Failure: Exit this loop if we have a "big" offset
-
-            // reset baseLVN back to the full address expression
-            baseLVN = baseVNP.GetLiberal();
-            break;
-        }
-
         // The arguments in value numbering functions are sorted in increasing order
         // Thus either arg could be the constant.
         if (vnStore->IsVNConstant(funcAttr.m_args[0]) && varTypeIsIntegral(vnStore->TypeOfVN(funcAttr.m_args[0])))
@@ -9261,20 +9250,20 @@ void Compiler::fgValueNumberAddExceptionSetForIndirection(GenTree* tree, GenTree
         {
             break;
         }
+
+        if (fgIsBigOffset(offsetL))
+        {
+            // Failure: Exit this loop if we have a "big" offset
+
+            // reset baseLVN back to the full address expression
+            baseLVN = baseVNP.GetLiberal();
+            break;
+        }
     }
 
     while (vnStore->GetVNFunc(baseCVN, &funcAttr) && (funcAttr.m_func == (VNFunc)GT_ADD) &&
            (vnStore->TypeOfVN(baseCVN) == TYP_BYREF))
     {
-        if (fgIsBigOffset(offsetC))
-        {
-            // Failure: Exit this loop if we have a "big" offset
-
-            // reset baseCVN back to the full address expression
-            baseCVN = baseVNP.GetConservative();
-            break;
-        }
-
         // The arguments in value numbering functions are sorted in increasing order
         // Thus either arg could be the constant.
         if (vnStore->IsVNConstant(funcAttr.m_args[0]) && varTypeIsIntegral(vnStore->TypeOfVN(funcAttr.m_args[0])))
@@ -9289,6 +9278,15 @@ void Compiler::fgValueNumberAddExceptionSetForIndirection(GenTree* tree, GenTree
         }
         else // neither argument is a constant
         {
+            break;
+        }
+
+        if (fgIsBigOffset(offsetC))
+        {
+            // Failure: Exit this loop if we have a "big" offset
+
+            // reset baseCVN back to the full address expression
+            baseCVN = baseVNP.GetConservative();
             break;
         }
     }
@@ -9742,7 +9740,8 @@ void Compiler::JitTestCheckVN()
                 }
                 // The mapping(s) must be one-to-one: if the label has a mapping, then the ssaNm must, as well.
                 ssize_t num2;
-                bool    b = vnToLabel->Lookup(vn, &num2);
+                bool    found = vnToLabel->Lookup(vn, &num2);
+                assert(found);
                 // And the mappings must be the same.
                 if (tlAndN.m_num != num2)
                 {

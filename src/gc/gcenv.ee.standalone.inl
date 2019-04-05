@@ -317,4 +317,18 @@ inline void GCToEEInterface::AnalyzeSurvivorsFinished(int condemnedGeneration)
     g_theGCToCLR->AnalyzeSurvivorsFinished(condemnedGeneration);
 }
 
+inline void GCToEEInterface::VerifySyncTableEntry()
+{
+    assert(g_theGCToCLR != nullptr);
+    g_theGCToCLR->VerifySyncTableEntry();
+}
+
+inline void GCToEEInterface::UpdateGCEventStatus(int publicLevel, int publicKeywords, int privateLevel, int privateKeywords)
+{
+    assert(g_theGCToCLR != nullptr);
+#if defined(__linux__)
+    g_theGCToCLR->UpdateGCEventStatus(publicLevel, publicKeywords, privateLevel, privateKeywords);
+#endif // __linux__
+}
+
 #endif // __GCTOENV_EE_STANDALONE_INL__

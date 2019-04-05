@@ -49,6 +49,7 @@ typedef DPTR(struct CORCOMPILE_HEADER) PTR_CORCOMPILE_HEADER;
 
 #include "readytorun.h"
 typedef DPTR(struct READYTORUN_HEADER) PTR_READYTORUN_HEADER;
+typedef DPTR(struct READYTORUN_SECTION) PTR_READYTORUN_SECTION;
 
 typedef DPTR(IMAGE_COR20_HEADER)    PTR_IMAGE_COR20_HEADER;
 
@@ -257,10 +258,12 @@ class PEDecoder
     PTR_VOID GetTlsRange(COUNT_T *pSize = NULL) const;
     UINT32 GetTlsIndex() const;
 
-#ifndef FEATURE_PAL
     // Win32 resources
     void *GetWin32Resource(LPCWSTR lpName, LPCWSTR lpType, COUNT_T *pSize = NULL) const;
-#endif // FEATURE_PAL
+  private:
+    DWORD ReadResourceDictionary(DWORD rvaOfResourceSection, DWORD rva, LPCWSTR name, BOOL *pIsDictionary) const;
+    DWORD ReadResourceDataEntry(DWORD rva, COUNT_T *pSize) const;
+  public:
 
     // COR header fields
 
@@ -400,7 +403,7 @@ class PEDecoder
     IMAGE_NT_HEADERS *FindNTHeaders() const;
     IMAGE_COR20_HEADER *FindCorHeader() const;
     CORCOMPILE_HEADER *FindNativeHeader() const;
-   READYTORUN_HEADER *FindReadyToRunHeader() const;
+    READYTORUN_HEADER *FindReadyToRunHeader() const;
 
     // Flat mapping utilities
     RVA InternalAddressToRva(SIZE_T address) const;

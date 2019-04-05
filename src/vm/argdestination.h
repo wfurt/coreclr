@@ -65,20 +65,17 @@ public:
 
         int floatRegCount = m_argLocDescForStructInRegs->m_cFloatReg;
         bool typeFloat = m_argLocDescForStructInRegs->m_isSinglePrecision;
-        void* dest = this->GetDestinationAddress();
+        UINT64* dest = (UINT64*) this->GetDestinationAddress();
 
-        if (typeFloat)
+        for (int i = 0; i < floatRegCount; ++i) 
         {
-            for (int i = 0; i < floatRegCount; ++i) 
-            {
-                // Copy 4 bytes on 8 bytes alignment
-                *((UINT64*)dest + i) = *((UINT32*)src + i);
-            }
-        }
-        else
-        {
-            // We can just do a memcpy.
-            memcpyNoGCRefs(dest, src, fieldBytes);
+            // Copy 4 or 8 bytes from src.
+            UINT64 val = typeFloat ? *((UINT32*)src + i) : *((UINT64*)src + i);
+            // Always store 8 bytes
+            *(dest++) = val;
+            // For now, always zero the next 8 bytes.
+            // (When HVAs are supported we will get the next 8 bytes from src.)
+            *(dest++) = 0;
         }
     }
 
@@ -129,7 +126,7 @@ public:
         // This function is used rarely and so the overhead of reading the zeros from
         // the stack is negligible.
         long long zeros[CLR_SYSTEMV_MAX_EIGHTBYTES_COUNT_TO_PASS_IN_REGISTERS] = {};
-        _ASSERTE(sizeof(zeros) >= fieldBytes);
+        _ASSERTE(sizeof(zeros) >= (size_t)fieldBytes);
 
         CopyStructToRegisters(zeros, fieldBytes, 0);
     }

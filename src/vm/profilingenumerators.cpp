@@ -45,7 +45,6 @@ BOOL ProfilerFunctionEnum::Init(BOOL fWithReJITIDs)
         // reader lock to prevent things from changing while reading...
         CAN_TAKE_LOCK;
 
-        SO_NOT_MAINLINE;
     } CONTRACTL_END;
 
     EEJitManager::CodeHeapIterator heapIterator;
@@ -166,8 +165,6 @@ HRESULT IterateAppDomains(CallbackObject * callbackObj,
         MODE_ANY;
         CAN_TAKE_LOCK;
         // (See comments in code:ProfToEEInterfaceImpl::EnumModules for info about contracts.)
-
-        SO_NOT_MAINLINE;
     }
     CONTRACTL_END;
 
@@ -178,15 +175,11 @@ HRESULT IterateAppDomains(CallbackObject * callbackObj,
     //     < AppDomainCreationFinished issued
     //     < AD NOT available from catch-up enumeration
     //     
-    // The AppDomainIterator constructor parameter m_bActive is set to be TRUE below,
-    // meaning only AppDomains in stage STAGE_ACTIVE or higher will be included
-    // in the iteration.
     //     * AppDomainCreationFinished (with S_OK hrStatus) is issued once the AppDomain
     //         reaches STAGE_ACTIVE.
-    AppDomainIterator appDomainIterator(TRUE);
-    while (appDomainIterator.Next())
+    AppDomain * pAppDomain = ::GetAppDomain();
+    if (pAppDomain->IsActive())
     {
-        AppDomain * pAppDomain = appDomainIterator.GetDomain();
 
         // Of course, the AD could start unloading here, but if it does we're guaranteed
         // the profiler has had a chance to see the Unload callback for the AD, and thus
@@ -475,7 +468,6 @@ HRESULT ProfilerModuleEnum::Init()
         CAN_TAKE_LOCK;
         // (See comments in code:ProfToEEInterfaceImpl::EnumModules for info about contracts.)
 
-        SO_NOT_MAINLINE;
     }
     CONTRACTL_END;
 
@@ -533,7 +525,6 @@ HRESULT IterateAppDomainContainingModule::AddAppDomainContainingModule(AppDomain
         GC_TRIGGERS;
         MODE_ANY;
         CAN_TAKE_LOCK;
-        SO_NOT_MAINLINE;
     }
     CONTRACTL_END;
 
@@ -571,7 +562,6 @@ HRESULT IterateAppDomainContainingModule::PopulateArray()
         GC_TRIGGERS;
         MODE_ANY;
         CAN_TAKE_LOCK;
-        SO_NOT_MAINLINE;
     }
     CONTRACTL_END;
 
@@ -600,7 +590,6 @@ HRESULT ProfilerThreadEnum::Init()
         GC_NOTRIGGER;
         MODE_ANY;
         CAN_TAKE_LOCK;
-        SO_NOT_MAINLINE;
     }
     CONTRACTL_END;
 

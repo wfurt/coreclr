@@ -7,8 +7,21 @@
 namespace Server.Contract
 {
     using System;
+    using System.Drawing;
     using System.Runtime.InteropServices;
     using System.Text;
+
+    public struct SizeF
+    {
+        public float width;
+        public float height;
+    }
+
+    public struct Size
+    {
+        public byte width;
+        public byte height;
+    }
 
     [ComVisible(true)]
     [Guid("05655A94-A915-4926-815D-A9EA648BAAD9")]
@@ -47,6 +60,14 @@ namespace Server.Contract
 
         int Add_ManyInts11(int i1, int i2, int i3, int i4, int i5, int i6, int i7, int i8, int i9, int i10, int i11);
         int Add_ManyInts12(int i1, int i2, int i3, int i4, int i5, int i6, int i7, int i8, int i9, int i10, int i11, int i12);
+
+        [PreserveSig]
+        SizeF MakeSize(float width, float height);
+        [PreserveSig]
+        Size MakeSizeSmall(byte width, byte height);
+
+        [PreserveSig]
+        HFA_4 MakeHFA(float x, float y, float z, float w);
     }
 
     [ComVisible(true)]
@@ -233,6 +254,24 @@ namespace Server.Contract
     }
 
     [ComVisible(true)]
+    [Guid("83AFF8E4-C46A-45DB-9D91-2ADB5164545E")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIDispatch)]
+    public interface IEventTesting
+    {
+        [DispId(1)]
+        void FireEvent();
+    }
+
+    [ComImport]
+    [Guid("28ea6635-42ab-4f5b-b458-4152e78b8e86")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIDispatch)]
+    public interface TestingEvents
+    {
+        [DispId(100)]
+        void OnEvent([MarshalAs(UnmanagedType.BStr)] string msg);
+    };
+
+    [ComVisible(true)]
     [Guid("98cc27f0-d521-4f79-8b63-e980e3a92974")]
     [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     public interface IAggregationTesting
@@ -245,6 +284,28 @@ namespace Server.Contract
         [return: MarshalAs(UnmanagedType.VariantBool)]
         bool AreAggregated([MarshalAs(UnmanagedType.IUnknown)] object aggregateMaybe1, [MarshalAs(UnmanagedType.IUnknown)] object aggregateMaybe2);
     };
+
+    [ComVisible(true)]
+    [Guid("E6D72BA7-0936-4396-8A69-3B76DA1108DA")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IColorTesting
+    {
+        bool AreColorsEqual(Color managed, int native);
+        Color GetRed();
+    }
+
+    [ComVisible(true)]
+    [Guid("6C9E230E-411F-4219-ABFD-E71F2B84FD50")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface ILicenseTesting
+    {
+        void SetNextDenyLicense([MarshalAs(UnmanagedType.VariantBool)] bool denyLicense);
+
+        [return: MarshalAs(UnmanagedType.BStr)]
+        string GetLicense();
+
+        void SetNextLicense([MarshalAs(UnmanagedType.LPWStr)] string lic);
+    }
 }
 
 #pragma warning restore 618 // Must test deprecated features

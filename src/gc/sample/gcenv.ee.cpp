@@ -100,7 +100,11 @@ uint32_t CLREventStatic::Wait(uint32_t dwMilliseconds, bool bAlertable)
     return result;
 }
 
+#ifndef __GNUC__
 __declspec(thread) Thread * pCurrentThread;
+#else // !__GNUC__
+thread_local Thread * pCurrentThread;
+#endif // !__GNUC__
 
 Thread * GetThread()
 {
@@ -319,9 +323,16 @@ bool GCToEEInterface::WasCurrentThreadCreatedByGC()
     return false;
 }
 
+static MethodTable freeObjectMT;
+
 MethodTable* GCToEEInterface::GetFreeObjectMethodTable()
 {
-    return g_pFreeObjectMethodTable;
+    // 
+    // Initialize free object methodtable. The GC uses a special array-like methodtable as placeholder
+    // for collected free space.
+    //
+    freeObjectMT.InitializeFreeObject();
+    return &freeObjectMT;
 }
 
 bool GCToEEInterface::CreateThread(void (*threadStart)(void*), void* arg, bool is_suspendable, const char* name)
@@ -349,7 +360,7 @@ void *GCToEEInterface::GetAppDomainAtIndex(uint32_t appDomainIndex)
 
 bool GCToEEInterface::AppDomainCanAccessHandleTable(uint32_t appDomainID)
 {
-    return false;
+    return true;
 }
 
 uint32_t GCToEEInterface::GetIndexOfAppDomainBeingUnloaded()

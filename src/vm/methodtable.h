@@ -16,7 +16,6 @@
 #include "hash.h"
 #include "crst.h"
 #include "cgensys.h"
-#include "declsec.h"
 #ifdef FEATURE_COMINTEROP
 #include "stdinterfaces.h"
 #endif
@@ -327,8 +326,10 @@ struct MethodTableWriteableData
         enum_flag_NGEN_OverridingInterface  = 0x00080000, // Overriding interface that we should generate WinRT CCW stubs for.
 
 #ifdef FEATURE_READYTORUN_COMPILER
-        enum_flag_NGEN_IsLayoutFixedComputed = 0x0010000, // Set if we have cached the result of IsLayoutFixed computation
-        enum_flag_NGEN_IsLayoutFixed        = 0x0020000, // The result of the IsLayoutFixed computation
+        enum_flag_NGEN_IsLayoutFixedComputed                    = 0x0010000, // Set if we have cached the result of IsLayoutFixed computation
+        enum_flag_NGEN_IsLayoutFixed                            = 0x0020000, // The result of the IsLayoutFixed computation
+        enum_flag_NGEN_IsLayoutInCurrentVersionBubbleComputed   = 0x0040000, // Set if we have cached the result of IsLayoutInCurrentVersionBubble computation
+        enum_flag_NGEN_IsLayoutInCurrentVersionBubble           = 0x0080000, // The result of the IsLayoutInCurrentVersionBubble computation
 #endif
 
 #endif // FEATURE_PREJIT
@@ -1394,7 +1395,6 @@ public:
     PCODE GetSlot(UINT32 slotNumber)
     {
         WRAPPER_NO_CONTRACT;
-        STATIC_CONTRACT_SO_TOLERANT;
         CONSISTENCY_CHECK(slotNumber < GetNumVtableSlots());
 
         TADDR pSlot = GetSlotPtrRaw(slotNumber);
@@ -1428,7 +1428,6 @@ public:
     TADDR GetSlotPtrRaw(UINT32 slotNum)
     {
         WRAPPER_NO_CONTRACT;
-        STATIC_CONTRACT_SO_TOLERANT;
         CONSISTENCY_CHECK(slotNum < GetNumVtableSlots());
 
         if (slotNum < GetNumVirtuals())
@@ -1458,7 +1457,6 @@ public:
     TADDR GetSlotPtr(UINT32 slotNum)
     {
         WRAPPER_NO_CONTRACT;
-        STATIC_CONTRACT_SO_TOLERANT;
 
         // Slots in NGened images are relative pointers
         CONSISTENCY_CHECK(!IsZapped());
@@ -1747,7 +1745,7 @@ public:
     BOOL IsString()
     {
         LIMITED_METHOD_DAC_CONTRACT;
-        return HasComponentSize() && !IsArray();
+        return HasComponentSize() && !IsArray() && RawGetComponentSize() == 2;
     }
 
     BOOL            HasComponentSize() const
@@ -1968,7 +1966,6 @@ public:
     // See JIT_IsInstanceOfInterface
     inline BOOL InstanceRequiresNonTrivialInterfaceCast()
     {
-        STATIC_CONTRACT_SO_TOLERANT;
         LIMITED_METHOD_CONTRACT;
 
         return GetFlag(enum_flag_NonTrivialInterfaceCast);
@@ -2446,14 +2443,14 @@ protected:
                            UINT32 slotNumber,
                            DispatchMapEntry *pEntry);
 
-public:
+private:
     BOOL FindDispatchImpl(
         UINT32         typeID, 
         UINT32         slotNumber, 
         DispatchSlot * pImplSlot,
         BOOL           throwOnConflict);
 
-
+public:
 #ifndef DACCESS_COMPILE
     BOOL FindDefaultInterfaceImplementation(
         MethodDesc *pInterfaceMD,
@@ -2464,8 +2461,6 @@ public:
 #endif // DACCESS_COMPILE
 
     DispatchSlot FindDispatchSlot(UINT32 typeID, UINT32 slotNumber, BOOL throwOnConflict);
-
-    DispatchSlot FindDispatchSlot(DispatchToken tok, BOOL throwOnConflict);
 
     // You must use the second of these two if there is any chance the pMD is a method
     // on a generic interface such as IComparable<T> (which it normally can be).  The 
@@ -3543,6 +3538,8 @@ public:
         MethodTable *             pMTDecl, 
         MethodTable *             pMTImpl);
 
+    void CopySlotFrom(UINT32 slotNumber, MethodDataWrapper &hSourceMTData, MethodTable *pSourceMT);
+
 protected:
     static void CheckInitMethodDataCache();
     static MethodData *FindParentMethodDataHelper(MethodTable *pMT);
@@ -3668,14 +3665,14 @@ private:
 
 #if defined(FEATURE_HFA)
 #if defined(UNIX_AMD64_ABI)
-#error Can't define both FEATURE_HFA and UNIX_AMD64_ABI
+#error "Can't define both FEATURE_HFA and UNIX_AMD64_ABI"
 #endif
         enum_flag_IsHFA                     = 0x00000800,   // This type is an HFA (Homogenous Floating-point Aggregate)
 #endif // FEATURE_HFA
 
 #if defined(UNIX_AMD64_ABI)
 #if defined(FEATURE_HFA)
-#error Can't define both FEATURE_HFA and UNIX_AMD64_ABI
+#error "Can't define both FEATURE_HFA and UNIX_AMD64_ABI"
 #endif
         enum_flag_IsRegStructPassed         = 0x00000800,   // This type is a System V register passed struct.
 #endif // UNIX_AMD64_ABI
@@ -4067,7 +4064,6 @@ public:
     inline DPTR(TYPE) GETTER() \
     { \
         LIMITED_METHOD_CONTRACT; \
-        STATIC_CONTRACT_SO_TOLERANT; \
         _ASSERTE(Has##NAME()); \
         return dac_cast<DPTR(TYPE)>(dac_cast<TADDR>(this) + GetOffsetOfOptionalMember(OptionalMember_##NAME)); \
     }
@@ -4150,6 +4146,10 @@ public:
 
 #ifdef FEATURE_READYTORUN_COMPILER
     //
+    // Is field layout in this type within the current version bubble?
+    //
+    BOOL IsLayoutInCurrentVersionBubble();
+    //
     // Is field layout in this type fixed within the current version bubble?
     // This check does not take the inheritance chain into account.
     //
@@ -4159,6 +4159,11 @@ public:
     // Is field layout of the inheritance chain fixed within the current version bubble?
     //
     BOOL IsInheritanceChainLayoutFixedInCurrentVersionBubble();
+
+    //
+    // Is the inheritance chain fixed within the current version bubble?
+    //
+    BOOL IsInheritanceChainFixedInCurrentVersionBubble();
 #endif
 
 };  // class MethodTable
